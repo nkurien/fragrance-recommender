@@ -1,4 +1,5 @@
 import os
+import math
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +74,7 @@ class FragranceMatch(BaseModel):
     brand: str
     gender: Optional[str]
     rating: Optional[float]
+    rating_count: Optional[int]
     top_notes: Optional[str]
     middle_notes: Optional[str]
     base_notes: Optional[str]
@@ -183,27 +185,44 @@ def recommend(request: RecommendRequest):
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query_sql = f"""
-            SELECT name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, url,
+            SELECT name, brand, gender, rating, rating_count, top_notes, middle_notes, base_notes, main_accords, url,
                    embedding <=> %s::vector AS distance
             FROM fragrances
             {where_clause}
-            ORDER BY distance LIMIT 5;
+            ORDER BY distance LIMIT 30;
         """
         # embedding vector must be first param for the <=> operator
         cur.execute(query_sql, [query_vector] + params[1:])
         rows = cur.fetchall()
 
+        # Re-rank the top-30 candidates by a blended score:
+        #   50% scent similarity + 35% log-scaled popularity + 15% rating value
+        # log(rating_count) is used so the gap between 100→10k reviews matters
+        # more than 50k→60k. Scores are normalized against the candidate pool.
+        max_log_count = max((math.log1p(r[4] or 0) for r in rows), default=1) or 1
+        scored = []
         for row in rows:
+            distance   = row[10]
+            similarity = 1 - distance                                        # higher = closer match
+            popularity = math.log1p(row[4] or 0) / max_log_count            # 0–1
+            quality    = (float(row[3]) / 5.0) if row[3] is not None else 0 # 0–1
+            score      = 0.50 * similarity + 0.35 * popularity + 0.15 * quality
+            scored.append((score, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        for _, row in scored[:5]:
             matches.append(FragranceMatch(
                 name=row[0],
                 brand=row[1],
                 gender=row[2],
                 rating=float(row[3]) if row[3] is not None else None,
-                top_notes=row[4],
-                middle_notes=row[5],
-                base_notes=row[6],
-                main_accords=row[7],
-                url=row[8]
+                rating_count=row[4],
+                top_notes=row[5],
+                middle_notes=row[6],
+                base_notes=row[7],
+                main_accords=row[8],
+                url=row[9]
             ))
             
     except Exception as e:

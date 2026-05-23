@@ -35,7 +35,7 @@ df = pd.read_csv(CSV_PATH, sep=';', encoding='latin1')
 
 # Clean nulls to avoid NaN string addition
 cols_to_fill = [
-    'Unnamed: 0', 'Perfume', 'Brand', 'Gender', 'Rating Value',
+    'url', 'Perfume', 'Brand', 'Gender', 'Rating Value', 'Rating Count',
     'Top', 'Middle', 'Base',
     'mainaccord1', 'mainaccord2', 'mainaccord3', 'mainaccord4', 'mainaccord5'
 ]
@@ -108,23 +108,32 @@ for idx, row in df.iterrows():
             rating_val = float(rating_str.replace(',', '.'))
         except ValueError:
             pass
-            
+
+    rating_count_val = None
+    rating_count_str = row['Rating Count']
+    if rating_count_str and rating_count_str != 'nan' and rating_count_str != '':
+        try:
+            rating_count_val = int(float(rating_count_str.replace(',', '.')))
+        except ValueError:
+            pass
+
     insert_data.append((
         row['Perfume'],
         row['Brand'],
         row['Gender'] if row['Gender'] else None,
         rating_val,
+        rating_count_val,
         row['Top'] if row['Top'] else None,
         row['Middle'] if row['Middle'] else None,
         row['Base'] if row['Base'] else None,
         row['accords_list'] if row['accords_list'] else None,
-        row['Unnamed: 0'] if row['Unnamed: 0'] else None,
+        row['url'] if row['url'] else None,
         embeddings[idx].tolist()
     ))
     
 # Execute batch insert using execute_values (extremely fast)
 insert_query = """
-    INSERT INTO fragrances (name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, url, embedding)
+    INSERT INTO fragrances (name, brand, gender, rating, rating_count, top_notes, middle_notes, base_notes, main_accords, url, embedding)
     VALUES %s
 """
 

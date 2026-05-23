@@ -239,6 +239,9 @@ export default function App() {
                     {match.rating && (
                       <span className="rating-badge">★ {match.rating.toFixed(1)}/5</span>
                     )}
+                    {match.rating_count && (
+                      <span className="rating-count">{match.rating_count.toLocaleString()} reviews</span>
+                    )}
                   </div>
                   <div className="notes-section">
                     {match.top_notes && <div><strong>Top:</strong> {match.top_notes}</div>}
