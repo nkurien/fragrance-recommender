@@ -1,20 +1,22 @@
-# Fragrance Recommender
+# Fragrance Finder
 
-A chat interface that recommends fragrances based on natural language descriptions. Describe what you're looking for and get back 2-3 recommendations with explanations.
+A conversational fragrance recommender. Describe a mood, memory, or scent profile and get back ranked recommendations with match and popularity scores, sourced from a database of ~24k fragrances.
 
-Built for a small group of friends. Runs entirely on free tiers.
+## How it works
+
+User input is embedded using a local sentence-transformers model and compared against pre-computed fragrance embeddings in a PostgreSQL + pgvector database. The top 30 nearest candidates are re-ranked by a blended score (scent similarity, review count, rating) and the best results are passed to an LLM which writes a natural language explanation.
+
+Embeddings are generated from notes and accords only, so matches reflect how a fragrance smells rather than name recognition.
 
 ## Stack
 
-| Layer | Service |
-|-------|---------|
+| Layer | Technology |
+|-------|------------|
 | Frontend | React + Vite, deployed on Vercel |
 | Backend | FastAPI, deployed on Render |
-| Database | Neon (PostgreSQL + pgvector) |
-| Embeddings | sentence-transformers (all-MiniLM-L6-v2, runs locally) |
+| Database | PostgreSQL + pgvector (Neon) |
+| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
 | LLM | Groq API (llama-3.1-8b-instant) |
-
-**Note:** Render's free tier spins down after 15 minutes of inactivity. The first request after idle takes 30-50 seconds. This is expected behaviour.
 
 ## Architecture
 
@@ -22,74 +24,33 @@ Built for a small group of friends. Runs entirely on free tiers.
 User (chat input)
     -> React frontend (Vercel)
     -> FastAPI backend (Render)
-        -> pgvector similarity search (Neon)
-        -> Groq LLM for recommendation text
-    -> Response with matches + explanation
+        -> Embed query with all-MiniLM-L6-v2
+        -> pgvector cosine similarity search (Neon)
+        -> Re-rank by blended score (similarity + popularity + rating)
+        -> Groq LLM generates recommendation text
+    -> Matches with scores and explanation
 ```
 
-## Setup
+## Running locally
 
-### Prerequisites
-
-- Python 3.11+
-- Node.js 18+
-- A [Neon](https://neon.tech) account (free)
-- A [Groq](https://console.groq.com) API key (free)
-
-### 1. Database
-
-Run `database_schema.sql` in the Neon SQL editor to create the `fragrances` table and enable the pgvector extension.
-
-### 2. Environment variables
-
-Copy the example file and fill in your values:
-
-```bash
-cp backend/.env.example backend/.env
-```
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Neon connection string (from the Neon console, Connection Details) |
-| `GROQ_API_KEY` | From [console.groq.com](https://console.groq.com) |
-
-### 3. Upload fragrance data (run once)
-
-Download `fra_cleaned.csv` from Kaggle and place it in `data/`. Then:
-
-```bash
-pip install pandas sentence-transformers psycopg2 python-dotenv pgvector
-python scripts/embed_and_upload.py
-```
-
-This generates embeddings locally and uploads all rows to Neon. Takes a few minutes on CPU.
-
-**Important:** Do not run this on a VPN. Port 5432 outbound is often blocked by VPN deep packet inspection.
-
-### 4. Run the backend
-
+**Backend**
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### 5. Run the frontend
-
+**Frontend**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The Vite dev server proxies `/api/` requests to `http://localhost:8000`.
-
-## Deployment
-
-The backend is deployed on Render and the frontend on Vercel, both via GitHub integration. Set `DATABASE_URL` and `GROQ_API_KEY` as environment variables in Render, and `VITE_API_URL` (pointing to the Render service URL) in Vercel.
+Open [http://localhost:5173](http://localhost:5173).
 
 ## Data
 
-Source: [Fragrantica dataset on Kaggle](https://www.kaggle.com) (`fra_cleaned.csv`, ~24k fragrances).
+Source: Fragrantica dataset (~24k fragrances) via Kaggle.
 
-Each fragrance is embedded as: `"{name} by {brand}. Gender: {gender}. Notes: {top}, {middle}, {base}. Accords: {accords}"` using `all-MiniLM-L6-v2` (384-dimensional vectors).
+Each fragrance is embedded from its gender, notes (top, middle, base), and main accords using all-MiniLM-L6-v2 (384 dimensions). Embeddings are generated locally and uploaded to Neon via `scripts/embed_and_upload.py`.
