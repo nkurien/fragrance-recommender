@@ -4,6 +4,7 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 import psycopg2
 from psycopg2.extras import execute_values
+from pgvector.psycopg2 import register_vector
 from dotenv import load_dotenv
 
 # Load environment variables from backend/.env if available
@@ -68,6 +69,7 @@ print("Embedding generation completed successfully.")
 print("Connecting to PostgreSQL database...")
 try:
     conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
     cur = conn.cursor()
     
     # Optional check for pgvector extension

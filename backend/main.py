@@ -23,18 +23,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
 
-# Initialize settings
-try:
-    settings = Settings()
-except Exception as e:
-    print(f"Configuration Error: {e}")
-    print("Please check that DATABASE_URL, GROQ_API_KEY, and HF_API_KEY are set.")
-    # Fallback to avoid crash on startup in incomplete environments
-    class DummySettings:
-        database_url = os.environ.get("DATABASE_URL", "")
-        groq_api_key = os.environ.get("GROQ_API_KEY", "")
-        hf_api_key = os.environ.get("HF_API_KEY", "")
-    settings = DummySettings()
+# Initialize settings (fail fast on missing variables)
+settings = Settings()
 
 app = FastAPI(title="Fragrance Recommender API")
 
@@ -42,7 +32,7 @@ app = FastAPI(title="Fragrance Recommender API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # For MVP. Adjust to Vercel domain in production.
-    allow_credentials=True,
+    allow_credentials=False,  # Wildcard origins do not permit credentials
     allow_methods=["*"],
     allow_headers=["*"],
 )
