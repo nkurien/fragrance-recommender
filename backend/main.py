@@ -275,7 +275,8 @@ def recommend(request: RecommendRequest):
         "2. Do NOT invent, hallucinate, or suggest any fragrance that is not in the candidate list.\n"
         "3. For each recommendation, describe why it fits using poetic, sensory, and engaging language "
         "referencing specific notes (top, middle, base) or main accords. Keep it to 2-3 sentences per fragrance.\n"
-        "4. Be warm and welcoming."
+        "4. Be warm and welcoming.\n"
+        "5. Do NOT open with salutations like 'Dear friend', 'My dear', or any similar greeting. Get straight to the recommendations."
     )
     
     user_prompt = (
