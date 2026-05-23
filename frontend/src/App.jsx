@@ -56,6 +56,12 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
 
+  // Warm up the backend and DB pool on mount so the first real request isn't cold
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_API_URL || '';
+    fetch(`${apiUrl}/api/health`).catch(() => {});
+  }, []);
+
   // Scroll to bottom when messages list updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
