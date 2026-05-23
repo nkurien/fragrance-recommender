@@ -7,17 +7,17 @@
   --color-bg-card: rgba(20, 20, 24, 0.85);
   --color-bg-input: rgba(255, 255, 255, 0.03);
   --color-border: rgba(255, 255, 255, 0.07);
-  --color-border-active: rgba(167, 139, 250, 0.35);
+  --color-border-active: rgba(249, 115, 22, 0.35);
 
-  --color-accent: #a78bfa;
-  --color-accent-hover: #c4b5fd;
-  --color-accent-glow: rgba(167, 139, 250, 0.12);
+  --color-accent: #f97316;
+  --color-accent-hover: #fb923c;
+  --color-accent-glow: rgba(249, 115, 22, 0.12);
 
   --color-text-primary: #e2e2e6;
   --color-text-secondary: #8b8b96;
   --color-text-muted: #4a4a55;
 
-  --color-bubble-user: rgba(167, 139, 250, 0.08);
+  --color-bubble-user: rgba(249, 115, 22, 0.08);
   --color-bubble-sommelier: rgba(28, 28, 34, 0.9);
 
   --radius-card: 12px;
@@ -167,7 +167,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(167, 139, 250, 0.2);
+  border: 1px solid rgba(249, 115, 22, 0.2);
   margin-bottom: 0.25rem;
   color: var(--color-accent);
 }
@@ -206,7 +206,7 @@ body {
 }
 
 .chip:hover {
-  border-color: rgba(167, 139, 250, 0.4);
+  border-color: rgba(249, 115, 22, 0.4);
   color: var(--color-accent);
 }
 
@@ -247,7 +247,7 @@ body {
 
 .message.user .avatar {
   color: var(--color-accent);
-  border-color: rgba(167, 139, 250, 0.2);
+  border-color: rgba(249, 115, 22, 0.2);
 }
 
 .bubble {
@@ -261,7 +261,7 @@ body {
 .message.user .bubble {
   background: var(--color-bubble-user);
   color: var(--color-text-primary);
-  border: 1px solid rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(249, 115, 22, 0.15);
   border-top-right-radius: 3px;
 }
 
@@ -354,7 +354,7 @@ body {
 }
 
 .text-input:focus {
-  border-color: rgba(167, 139, 250, 0.4);
+  border-color: rgba(249, 115, 22, 0.4);
 }
 
 .text-input::placeholder {
@@ -375,7 +375,7 @@ body {
 }
 
 .gender-select:focus {
-  border-color: rgba(167, 139, 250, 0.4);
+  border-color: rgba(249, 115, 22, 0.4);
 }
 
 .gender-select option {
@@ -455,8 +455,8 @@ body {
 }
 
 .match-card--linked:hover {
-  border-color: rgba(167, 139, 250, 0.4);
-  background: rgba(167, 139, 250, 0.04);
+  border-color: rgba(249, 115, 22, 0.4);
+  background: rgba(249, 115, 22, 0.04);
 }
 
 .match-link-icon {
@@ -508,9 +508,9 @@ body {
 }
 
 .score-match {
-  background: rgba(167, 139, 250, 0.12);
-  color: var(--color-accent);
-  border: 1px solid rgba(167, 139, 250, 0.25);
+  background: rgba(34, 197, 94, 0.1);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.25);
 }
 
 .score-popularity {
@@ -580,7 +580,7 @@ body {
 }
 
 .show-more-btn:hover {
-  border-color: rgba(167, 139, 250, 0.35);
+  border-color: rgba(249, 115, 22, 0.35);
   color: var(--color-accent);
 }
 
@@ -644,9 +644,9 @@ body {
   }
 
   .mobile-tab.active {
-    border-color: rgba(167, 139, 250, 0.4);
+    border-color: rgba(249, 115, 22, 0.4);
     color: var(--color-accent);
-    background: rgba(167, 139, 250, 0.06);
+    background: rgba(249, 115, 22, 0.06);
   }
 
   .tab-dot {
@@ -715,9 +715,9 @@ body {
   }
 
   .gender-toggle.active {
-    border-color: rgba(167, 139, 250, 0.4);
+    border-color: rgba(249, 115, 22, 0.4);
     color: var(--color-accent);
-    background: rgba(167, 139, 250, 0.06);
+    background: rgba(249, 115, 22, 0.06);
   }
 
   .gender-toggle:disabled {
