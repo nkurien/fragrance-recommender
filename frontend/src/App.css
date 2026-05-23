@@ -272,6 +272,29 @@ body {
   border-top-left-radius: 3px;
 }
 
+.message.sommelier .bubble p {
+  margin: 0 0 0.6rem 0;
+}
+
+.message.sommelier .bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.message.sommelier .bubble strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.message.sommelier .bubble ol,
+.message.sommelier .bubble ul {
+  padding-left: 1.2rem;
+  margin: 0.4rem 0;
+}
+
+.message.sommelier .bubble li {
+  margin-bottom: 0.4rem;
+}
+
 /* Loading State */
 .loading-message {
   display: flex;

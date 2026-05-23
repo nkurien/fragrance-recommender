@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import './App.css';
 
 // SVG Icons as inline components for clean packaging
@@ -186,7 +187,9 @@ export default function App() {
                   {msg.sender === 'sommelier' ? <SommelierAvatarIcon /> : <UserAvatarIcon />}
                 </div>
                 <div className="bubble">
-                  {msg.text}
+                  {msg.sender === 'sommelier'
+                    ? <ReactMarkdown>{msg.text}</ReactMarkdown>
+                    : msg.text}
                 </div>
               </div>
             ))}
