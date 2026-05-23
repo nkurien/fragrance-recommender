@@ -30,8 +30,8 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # 2. Load and Preprocess CSV
 print(f"Reading dataset from {CSV_PATH}...")
-# Delimiter is semicolons in raw data
-df = pd.read_csv(CSV_PATH, sep=';')
+# Delimiter is semicolons in raw data, encoding is latin1 for European characters
+df = pd.read_csv(CSV_PATH, sep=';', encoding='latin1')
 
 # Clean nulls to avoid NaN string addition
 cols_to_fill = [
@@ -67,64 +67,74 @@ embeddings = model.encode(df['embedding_text'].tolist(), show_progress_bar=True)
 print("Embedding generation completed successfully.")
 
 # 4. Connect to Supabase/Neon and Upload
+import time
+
 print("Connecting to PostgreSQL database...")
-try:
-    conn = psycopg2.connect(DATABASE_URL)
-    register_vector(conn)
-    cur = conn.cursor()
-    
-    # Optional check for pgvector extension
-    cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector';")
-    if not cur.fetchone():
-        print("pgvector extension not enabled in DB. Attempting to enable it...")
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        conn.commit()
-
-    print("Uploading data in batches...")
-    
-    # Prepare batch insert tuples
-    insert_data = []
-    for idx, row in df.iterrows():
-        # Clean rating to numeric/float (replace commas with dots)
-        rating_val = None
-        rating_str = row['Rating Value']
-        if rating_str and rating_str != 'nan' and rating_str != '':
-            try:
-                rating_val = float(rating_str.replace(',', '.'))
-            except ValueError:
-                pass
-                
-        insert_data.append((
-            row['Perfume'],
-            row['Brand'],
-            row['Gender'] if row['Gender'] else None,
-            rating_val,
-            row['Top'] if row['Top'] else None,
-            row['Middle'] if row['Middle'] else None,
-            row['Base'] if row['Base'] else None,
-            row['accords_list'] if row['accords_list'] else None,
-            embeddings[idx].tolist()
-        ))
-        
-    # Execute batch insert using execute_values (extremely fast)
-    insert_query = """
-        INSERT INTO fragrances (name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, embedding)
-        VALUES %s
-    """
-    
-    # Empty table first to avoid duplicate MVP uploads
-    print("Clearing existing fragrances table...")
-    cur.execute("TRUNCATE TABLE fragrances;")
-    
-    execute_values(cur, insert_query, insert_data)
-    conn.commit()
-    print(f"Successfully uploaded {len(insert_data)} fragrances to the database!")
-
-except Exception as e:
-    print(f"An error occurred during database upload: {e}")
+conn = None
+for attempt in range(5):
+    try:
+        # Use connect_timeout to fail fast and retry if gateway cold start drops connection
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=30)
+        break
+    except Exception as e:
+        print(f"Connection attempt {attempt + 1} failed: {e}")
+        if attempt < 4:
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
+else:
+    print("Could not connect after 5 attempts.")
     sys.exit(1)
-finally:
-    if 'conn' in locals() and conn:
-        cur.close()
-        conn.close()
-        print("Database connection closed.")
+
+register_vector(conn)
+cur = conn.cursor()
+
+# Optional check for pgvector extension
+cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector';")
+if not cur.fetchone():
+    print("pgvector extension not enabled in DB. Attempting to enable it...")
+    cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    conn.commit()
+
+print("Uploading data in batches...")
+
+# Prepare batch insert tuples
+insert_data = []
+for idx, row in df.iterrows():
+    # Clean rating to numeric/float (replace commas with dots)
+    rating_val = None
+    rating_str = row['Rating Value']
+    if rating_str and rating_str != 'nan' and rating_str != '':
+        try:
+            rating_val = float(rating_str.replace(',', '.'))
+        except ValueError:
+            pass
+            
+    insert_data.append((
+        row['Perfume'],
+        row['Brand'],
+        row['Gender'] if row['Gender'] else None,
+        rating_val,
+        row['Top'] if row['Top'] else None,
+        row['Middle'] if row['Middle'] else None,
+        row['Base'] if row['Base'] else None,
+        row['accords_list'] if row['accords_list'] else None,
+        embeddings[idx].tolist()
+    ))
+    
+# Execute batch insert using execute_values (extremely fast)
+insert_query = """
+    INSERT INTO fragrances (name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, embedding)
+    VALUES %s
+"""
+
+# Empty table first to avoid duplicate MVP uploads
+print("Clearing existing fragrances table...")
+cur.execute("TRUNCATE TABLE fragrances;")
+
+execute_values(cur, insert_query, insert_data)
+conn.commit()
+print(f"Successfully uploaded {len(insert_data)} fragrances to the database!")
+
+cur.close()
+conn.close()
+print("Database connection closed.")

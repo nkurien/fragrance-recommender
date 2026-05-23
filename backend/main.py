@@ -1,6 +1,5 @@
 import os
 import time
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -10,6 +9,7 @@ from groq import Groq
 import psycopg2
 from psycopg2.pool import SimpleConnectionPool
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
 # Load environment variables
 load_dotenv()
@@ -17,7 +17,6 @@ load_dotenv()
 class Settings(BaseSettings):
     database_url: str = Field(..., env="DATABASE_URL")
     groq_api_key: str = Field(..., env="GROQ_API_KEY")
-    hf_api_key: str = Field(..., env="HF_API_KEY")
 
     class Config:
         env_file = ".env"
@@ -25,6 +24,10 @@ class Settings(BaseSettings):
 
 # Initialize settings (fail fast on missing variables)
 settings = Settings()
+
+# Load embedding model once at startup (lightweight, ~22MB)
+print("Loading local sentence-transformers/all-MiniLM-L6-v2 embedding model...")
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 app = FastAPI(title="Fragrance Recommender API")
 
@@ -72,62 +75,16 @@ class RecommendResponse(BaseModel):
     recommendation: str
     matches: List[FragranceMatch]
 
-# Helper function to get embeddings from HF Serverless API with retry logic
 def get_query_embedding(query_text: str) -> List[float]:
-    model_id = "sentence-transformers/all-MiniLM-L6-v2"
-    api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_id}"
-    headers = {"Authorization": f"Bearer {settings.hf_api_key}"}
-    
-    max_retries = 3
-    retry_delay = 2.0
-    
-    with httpx.Client(timeout=30.0) as client:
-        for attempt in range(max_retries):
-            try:
-                response = client.post(
-                    api_url,
-                    headers=headers,
-                    json={"inputs": query_text, "options": {"wait_for_model": True}}
-                )
-                
-                # Check for HF loading model status (503)
-                if response.status_code == 503:
-                    print(f"Hugging Face model is loading (attempt {attempt + 1}/{max_retries}). Waiting {retry_delay}s...")
-                    time.sleep(retry_delay)
-                    continue
-                
-                response.raise_for_status()
-                embedding = response.json()
-                
-                # Verify that response is a valid 384-dimensional vector
-                if isinstance(embedding, list) and len(embedding) > 0:
-                    # Sometimes HF API wraps the output in nested lists
-                    if isinstance(embedding[0], list):
-                        embedding = embedding[0]
-                    return embedding
-                else:
-                    raise ValueError("Unexpected response format from Hugging Face API.")
-                    
-            except httpx.HTTPStatusError as e:
-                print(f"HTTP error on HF API call: {e.response.text}")
-                if attempt == max_retries - 1:
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Hugging Face Embedding API error. The model might be loading or rate-limited."
-                    )
-            except Exception as e:
-                print(f"Error calling HF Embedding API: {e}")
-                if attempt == max_retries - 1:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to generate query embedding: {str(e)}"
-                    )
-            time.sleep(retry_delay)
-            
-    raise HTTPException(
-        status_code=503,
-        detail="Hugging Face API is temporarily unavailable (model took too long to load). Please try again shortly."
-    )
+    try:
+        # Encode user query using the local model
+        return embedding_model.encode(query_text).tolist()
+    except Exception as e:
+        print(f"Error generating local embedding: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate query embedding: {str(e)}"
+        )
 
 @app.get("/api/health")
 def health_check():
@@ -148,7 +105,7 @@ def health_check():
         "status": "healthy",
         "database": db_status,
         "groq": "configured" if groq_client else "unconfigured",
-        "hf_embeddings": "configured" if settings.hf_api_key else "unconfigured"
+        "local_embeddings": "loaded"
     }
 
 @app.post("/api/recommend", response_model=RecommendResponse)
@@ -157,8 +114,6 @@ def recommend(request: RecommendRequest):
         raise HTTPException(status_code=500, detail="Database connection pool is uninitialized.")
     if not groq_client:
         raise HTTPException(status_code=500, detail="Groq API client is unconfigured.")
-    if not settings.hf_api_key:
-        raise HTTPException(status_code=500, detail="Hugging Face API key is unconfigured.")
 
     # 1. Vectorize user query
     print(f"Generating embedding for query: '{request.description}'")
