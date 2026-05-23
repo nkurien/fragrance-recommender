@@ -199,8 +199,8 @@ export default function App() {
               >
                 <option value="">All Genders</option>
                 <option value="unisex">Unisex</option>
-                <option value="female">Female</option>
-                <option value="male">Male</option>
+                <option value="women">Female</option>
+                <option value="men">Male</option>
               </select>
               <button type="submit" disabled={loading || !inputText.trim()} className="send-button">
                 <SendIcon />
