@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS fragrances (
     middle_notes TEXT,
     base_notes TEXT,
     main_accords TEXT, -- Comma-separated list of accords (e.g. "citrus, woody, sweet")
+    url TEXT,          -- Fragrantica product page URL
     embedding vector(384) -- 384-dimensional vector from all-MiniLM-L6-v2
 );
 

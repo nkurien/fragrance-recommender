@@ -224,12 +224,15 @@ export default function App() {
           ) : (
             <div className="matches-list">
               {matches.map((match, index) => (
-                <div key={index} className="match-card">
+                <div key={index} className={`match-card${match.url ? ' match-card--linked' : ''}`}
+                  onClick={() => match.url && window.open(match.url, '_blank', 'noopener,noreferrer')}
+                >
                   <div className="match-header">
                     <div>
                       <div className="match-title">{match.name}</div>
                       <div className="match-brand">{match.brand}</div>
                     </div>
+                    {match.url && <span className="match-link-icon">↗</span>}
                   </div>
                   <div className="match-meta">
                     <span>{match.gender || 'Unisex'}</span>

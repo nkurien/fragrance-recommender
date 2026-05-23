@@ -424,11 +424,27 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
-.match-card:hover {
-  border-color: rgba(167, 139, 250, 0.2);
+.match-card--linked {
+  cursor: pointer;
+}
+
+.match-card--linked:hover {
+  border-color: rgba(167, 139, 250, 0.4);
+  background: rgba(167, 139, 250, 0.04);
+}
+
+.match-link-icon {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: color 0.2s ease;
+}
+
+.match-card--linked:hover .match-link-icon {
+  color: var(--color-accent);
 }
 
 .match-header {

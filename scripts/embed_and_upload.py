@@ -35,8 +35,8 @@ df = pd.read_csv(CSV_PATH, sep=';', encoding='latin1')
 
 # Clean nulls to avoid NaN string addition
 cols_to_fill = [
-    'Perfume', 'Brand', 'Gender', 'Rating Value', 
-    'Top', 'Middle', 'Base', 
+    'Unnamed: 0', 'Perfume', 'Brand', 'Gender', 'Rating Value',
+    'Top', 'Middle', 'Base',
     'mainaccord1', 'mainaccord2', 'mainaccord3', 'mainaccord4', 'mainaccord5'
 ]
 for col in cols_to_fill:
@@ -118,12 +118,13 @@ for idx, row in df.iterrows():
         row['Middle'] if row['Middle'] else None,
         row['Base'] if row['Base'] else None,
         row['accords_list'] if row['accords_list'] else None,
+        row['Unnamed: 0'] if row['Unnamed: 0'] else None,
         embeddings[idx].tolist()
     ))
     
 # Execute batch insert using execute_values (extremely fast)
 insert_query = """
-    INSERT INTO fragrances (name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, embedding)
+    INSERT INTO fragrances (name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, url, embedding)
     VALUES %s
 """
 

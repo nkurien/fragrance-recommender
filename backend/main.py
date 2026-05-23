@@ -77,6 +77,7 @@ class FragranceMatch(BaseModel):
     middle_notes: Optional[str]
     base_notes: Optional[str]
     main_accords: Optional[str]
+    url: Optional[str]
 
 class RecommendResponse(BaseModel):
     recommendation: str
@@ -182,7 +183,7 @@ def recommend(request: RecommendRequest):
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query_sql = f"""
-            SELECT name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords,
+            SELECT name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords, url,
                    embedding <=> %s::vector AS distance
             FROM fragrances
             {where_clause}
@@ -191,7 +192,7 @@ def recommend(request: RecommendRequest):
         # embedding vector must be first param for the <=> operator
         cur.execute(query_sql, [query_vector] + params[1:])
         rows = cur.fetchall()
-        
+
         for row in rows:
             matches.append(FragranceMatch(
                 name=row[0],
@@ -201,7 +202,8 @@ def recommend(request: RecommendRequest):
                 top_notes=row[4],
                 middle_notes=row[5],
                 base_notes=row[6],
-                main_accords=row[7]
+                main_accords=row[7],
+                url=row[8]
             ))
             
     except Exception as e:
