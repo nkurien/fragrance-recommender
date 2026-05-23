@@ -115,6 +115,38 @@ def health_check():
         "local_embeddings": "loaded"
     }
 
+def resolve_query_to_notes(description: str, conn) -> tuple[str, str | None]:
+    """
+    If the user's query mentions a known fragrance name, look it up in the DB and
+    return its olfactory profile as the embedding text + its name to exclude from results.
+    Falls back to the original description if no match is found.
+    Returns (embedding_text, exclude_name_or_None).
+    """
+    cur = conn.cursor()
+    # Use DB-side ILIKE to find fragrances whose name appears as a substring in the user query.
+    # Pick the longest matching name to avoid partial matches (e.g. "Good" matching "Good Girl").
+    cur.execute(
+        """
+        SELECT name, brand, top_notes, middle_notes, base_notes, main_accords, gender
+        FROM fragrances
+        WHERE %s ILIKE '%%' || name || '%%'
+        ORDER BY LENGTH(name) DESC
+        LIMIT 1;
+        """,
+        (description,)
+    )
+    row = cur.fetchone()
+    if row:
+        name, brand, top, mid, base, accords, gender = row
+        print(f"Resolved query to known fragrance: '{name}' by '{brand}' — embedding its notes profile.")
+        notes_text = (
+            f"Gender: {gender or ''}. "
+            f"Notes: {top or ''}, {mid or ''}, {base or ''}. "
+            f"Accords: {accords or ''}"
+        )
+        return notes_text, name
+    return description, None
+
 @app.post("/api/recommend", response_model=RecommendResponse)
 def recommend(request: RecommendRequest):
     if not db_pool:
@@ -122,34 +154,42 @@ def recommend(request: RecommendRequest):
     if not groq_client:
         raise HTTPException(status_code=500, detail="Groq API client is unconfigured.")
 
-    # 1. Vectorize user query
-    print(f"Generating embedding for query: '{request.description}'")
-    query_vector = get_query_embedding(request.description)
-    
-    # 2. Query Postgres pgvector
     conn = None
     matches = []
     try:
         conn = db_pool.getconn()
+
+        # 1. Resolve query: if user named a specific fragrance, embed its notes profile instead
+        embedding_query, exclude_name = resolve_query_to_notes(request.description, conn)
+        print(f"Generating embedding for: '{embedding_query[:120]}...'")
+        query_vector = get_query_embedding(embedding_query)
+
+        # 2. Query Postgres pgvector
         cur = conn.cursor()
-        
-        # Build vector search query
-        # Using cosine distance operator <=>
-        query_sql = """
+
+        # Build vector search query using cosine distance operator <=>
+        conditions = []
+        params = [query_vector]
+
+        if request.gender:
+            conditions.append("LOWER(gender) = LOWER(%s)")
+            params.append(request.gender)
+
+        # Exclude the source fragrance itself from "similar to X" results
+        if exclude_name:
+            conditions.append("LOWER(name) != LOWER(%s)")
+            params.append(exclude_name)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        query_sql = f"""
             SELECT name, brand, gender, rating, top_notes, middle_notes, base_notes, main_accords,
                    embedding <=> %s::vector AS distance
             FROM fragrances
+            {where_clause}
+            ORDER BY distance LIMIT 5;
         """
-        
-        # Optional: Add hard gender filtering if requested
-        params = [query_vector]
-        if request.gender:
-            query_sql += " WHERE LOWER(gender) = LOWER(%s)"
-            params.append(request.gender)
-            
-        query_sql += " ORDER BY distance LIMIT 5;"
-        
-        cur.execute(query_sql, params)
+        # embedding vector must be first param for the <=> operator
+        cur.execute(query_sql, [query_vector] + params[1:])
         rows = cur.fetchall()
         
         for row in rows:

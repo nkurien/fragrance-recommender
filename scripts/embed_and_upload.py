@@ -52,10 +52,10 @@ def clean_accords(row):
 
 df['accords_list'] = df.apply(clean_accords, axis=1)
 
-# Create embedding text using actual column names
+# Create embedding text using only olfactory profile — intentionally exclude name/brand
+# so vector similarity reflects scent similarity, not name similarity.
 print("Preparing text for embedding generation...")
 df['embedding_text'] = (
-    df['Perfume'] + " by " + df['Brand'] + ". " +
     "Gender: " + df['Gender'] + ". " +
     "Notes: " + df['Top'] + ", " + df['Middle'] + ", " + df['Base'] + ". " +
     "Accords: " + df['accords_list']
