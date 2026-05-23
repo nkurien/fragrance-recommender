@@ -71,7 +71,8 @@ export default function App() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/recommend', {
+      const apiUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/recommend`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
