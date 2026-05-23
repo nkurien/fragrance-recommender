@@ -33,3 +33,5 @@ data/*.csv
 data/*.xlsx
 data/*.json
 !data/.gitkeep
+
+.vscode

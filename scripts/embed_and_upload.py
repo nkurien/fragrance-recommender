@@ -30,13 +30,14 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # 2. Load and Preprocess CSV
 print(f"Reading dataset from {CSV_PATH}...")
-df = pd.read_csv(CSV_PATH)
+# Delimiter is semicolons in raw data
+df = pd.read_csv(CSV_PATH, sep=';')
 
 # Clean nulls to avoid NaN string addition
 cols_to_fill = [
-    'Perfume', 'Brand', 'Gender', 'Rating', 
-    'Top Notes', 'Middle Notes', 'Base Notes', 
-    'Main Accord 1', 'Main Accord 2', 'Main Accord 3', 'Main Accord 4', 'Main Accord 5'
+    'Perfume', 'Brand', 'Gender', 'Rating Value', 
+    'Top', 'Middle', 'Base', 
+    'mainaccord1', 'mainaccord2', 'mainaccord3', 'mainaccord4', 'mainaccord5'
 ]
 for col in cols_to_fill:
     if col in df.columns:
@@ -46,17 +47,17 @@ for col in cols_to_fill:
 
 # Helper to aggregate accords
 def clean_accords(row):
-    accords = [row['Main Accord 1'], row['Main Accord 2'], row['Main Accord 3'], row['Main Accord 4'], row['Main Accord 5']]
+    accords = [row['mainaccord1'], row['mainaccord2'], row['mainaccord3'], row['mainaccord4'], row['mainaccord5']]
     return ", ".join([a for a in accords if a])
 
 df['accords_list'] = df.apply(clean_accords, axis=1)
 
-# Create embedding text
+# Create embedding text using actual column names
 print("Preparing text for embedding generation...")
 df['embedding_text'] = (
     df['Perfume'] + " by " + df['Brand'] + ". " +
     "Gender: " + df['Gender'] + ". " +
-    "Notes: " + df['Top Notes'] + ", " + df['Middle Notes'] + ", " + df['Base Notes'] + ". " +
+    "Notes: " + df['Top'] + ", " + df['Middle'] + ", " + df['Base'] + ". " +
     "Accords: " + df['accords_list']
 )
 
@@ -84,11 +85,12 @@ try:
     # Prepare batch insert tuples
     insert_data = []
     for idx, row in df.iterrows():
-        # Clean rating to numeric/float or None if empty
+        # Clean rating to numeric/float (replace commas with dots)
         rating_val = None
-        if row['Rating'] and row['Rating'] != 'nan':
+        rating_str = row['Rating Value']
+        if rating_str and rating_str != 'nan' and rating_str != '':
             try:
-                rating_val = float(row['Rating'])
+                rating_val = float(rating_str.replace(',', '.'))
             except ValueError:
                 pass
                 
@@ -97,9 +99,9 @@ try:
             row['Brand'],
             row['Gender'] if row['Gender'] else None,
             rating_val,
-            row['Top Notes'] if row['Top Notes'] else None,
-            row['Middle Notes'] if row['Middle Notes'] else None,
-            row['Base Notes'] if row['Base Notes'] else None,
+            row['Top'] if row['Top'] else None,
+            row['Middle'] if row['Middle'] else None,
+            row['Base'] if row['Base'] else None,
             row['accords_list'] if row['accords_list'] else None,
             embeddings[idx].tolist()
         ))
