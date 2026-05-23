@@ -1,0 +1,7 @@
+/* Simple reset file to prevent default styles from clashing with custom layout */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}

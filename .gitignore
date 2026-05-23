@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.env
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project Data (Ignore heavy datasets and local downloads)
+data/*.csv
+data/*.xlsx
+data/*.json
+!data/.gitkeep
