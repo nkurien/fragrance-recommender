@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS fragrances (
     gender TEXT,
     rating NUMERIC,
     rating_count INTEGER,
+    year INTEGER,
     top_notes TEXT,
     middle_notes TEXT,
     base_notes TEXT,

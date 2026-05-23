@@ -35,7 +35,7 @@ df = pd.read_csv(CSV_PATH, sep=';', encoding='latin1')
 
 # Clean nulls to avoid NaN string addition
 cols_to_fill = [
-    'url', 'Perfume', 'Brand', 'Gender', 'Rating Value', 'Rating Count',
+    'url', 'Perfume', 'Brand', 'Gender', 'Rating Value', 'Rating Count', 'Year',
     'Top', 'Middle', 'Base',
     'mainaccord1', 'mainaccord2', 'mainaccord3', 'mainaccord4', 'mainaccord5'
 ]
@@ -117,12 +117,21 @@ for idx, row in df.iterrows():
         except ValueError:
             pass
 
+    year_val = None
+    year_str = row['Year']
+    if year_str and year_str != 'nan' and year_str != '':
+        try:
+            year_val = int(float(year_str))
+        except ValueError:
+            pass
+
     insert_data.append((
         row['Perfume'],
         row['Brand'],
         row['Gender'] if row['Gender'] else None,
         rating_val,
         rating_count_val,
+        year_val,
         row['Top'] if row['Top'] else None,
         row['Middle'] if row['Middle'] else None,
         row['Base'] if row['Base'] else None,
@@ -133,7 +142,7 @@ for idx, row in df.iterrows():
     
 # Execute batch insert using execute_values (extremely fast)
 insert_query = """
-    INSERT INTO fragrances (name, brand, gender, rating, rating_count, top_notes, middle_notes, base_notes, main_accords, url, embedding)
+    INSERT INTO fragrances (name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url, embedding)
     VALUES %s
 """
 

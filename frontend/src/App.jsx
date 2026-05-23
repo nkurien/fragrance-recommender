@@ -273,7 +273,10 @@ export default function App() {
                 >
                   <div className="match-header">
                     <div>
-                      <div className="match-title">{match.name}</div>
+                      <div className="match-title">
+                        {match.name}
+                        {match.year && <span className="match-year">{match.year}</span>}
+                      </div>
                       <div className="match-brand">{match.brand}</div>
                     </div>
                     {match.url && <span className="match-link-icon">↗</span>}

@@ -75,6 +75,7 @@ class FragranceMatch(BaseModel):
     gender: Optional[str]
     rating: Optional[float]
     rating_count: Optional[int]
+    year: Optional[int]
     top_notes: Optional[str]
     middle_notes: Optional[str]
     base_notes: Optional[str]
@@ -187,7 +188,7 @@ def recommend(request: RecommendRequest):
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query_sql = f"""
-            SELECT name, brand, gender, rating, rating_count, top_notes, middle_notes, base_notes, main_accords, url,
+            SELECT name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url,
                    embedding <=> %s::vector AS distance
             FROM fragrances
             {where_clause}
@@ -204,7 +205,7 @@ def recommend(request: RecommendRequest):
         max_log_count = max((math.log1p(r[4] or 0) for r in rows), default=1) or 1
         scored = []
         for row in rows:
-            distance   = row[10]
+            distance   = row[11]
             similarity = 1 - distance                                        # higher = closer match
             popularity = math.log1p(row[4] or 0) / max_log_count            # 0–1
             quality    = (float(row[3]) / 5.0) if row[3] is not None else 0 # 0–1
@@ -221,7 +222,7 @@ def recommend(request: RecommendRequest):
         POPULARITY_ANCHOR = math.log1p(50_000)
 
         for blended, row in scored[:30]:
-            match_pct      = round((1 - row[10]) * 100)
+            match_pct      = round((1 - row[11]) * 100)
             popularity_pct = min(round(math.log1p(row[4] or 0) / POPULARITY_ANCHOR * 100), 100)
             matches.append(FragranceMatch(
                 name=row[0],
@@ -229,11 +230,12 @@ def recommend(request: RecommendRequest):
                 gender=row[2],
                 rating=float(row[3]) if row[3] is not None else None,
                 rating_count=row[4],
-                top_notes=row[5],
-                middle_notes=row[6],
-                base_notes=row[7],
-                main_accords=row[8],
-                url=row[9],
+                year=row[5],
+                top_notes=row[6],
+                middle_notes=row[7],
+                base_notes=row[8],
+                main_accords=row[9],
+                url=row[10],
                 match_score=match_pct,
                 popularity_score=popularity_pct,
             ))
