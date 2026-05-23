@@ -54,6 +54,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [matches, setMatches] = useState([]);
   const [visibleCount, setVisibleCount] = useState(5);
+  const [mobileTab, setMobileTab] = useState('chat');
+  const [hasNewResults, setHasNewResults] = useState(false);
   
   const messagesEndRef = useRef(null);
 
@@ -100,6 +102,7 @@ export default function App() {
       if (data.matches && data.matches.length > 0) {
         setMatches(data.matches);
         setVisibleCount(5);
+        setHasNewResults(true);
       }
     } catch (error) {
       console.error(error);
@@ -132,10 +135,27 @@ export default function App() {
         </div>
       </header>
 
+      {/* Mobile Tab Bar */}
+      <div className="mobile-tabs">
+        <button
+          className={`mobile-tab ${mobileTab === 'chat' ? 'active' : ''}`}
+          onClick={() => setMobileTab('chat')}
+        >
+          Chat
+        </button>
+        <button
+          className={`mobile-tab ${mobileTab === 'results' ? 'active' : ''}`}
+          onClick={() => { setMobileTab('results'); setHasNewResults(false); }}
+        >
+          Results
+          {hasNewResults && <span className="tab-dot" />}
+        </button>
+      </div>
+
       {/* Main Workspace */}
       <div className="main-content">
         {/* Chat Area */}
-        <section className="chat-area">
+        <section className={`chat-area ${mobileTab !== 'chat' ? 'mobile-hidden' : ''}`}>
           <div className="messages-container">
             {messages.length === 1 && (
               <div className="welcome-card">
@@ -219,7 +239,7 @@ export default function App() {
         </section>
 
         {/* Sidebar Matches Panel */}
-        <aside className="matches-panel">
+        <aside className={`matches-panel ${mobileTab !== 'results' ? 'mobile-hidden' : ''}`}>
           <h3>
             <BottleIcon /> Recommended Candidates
           </h3>

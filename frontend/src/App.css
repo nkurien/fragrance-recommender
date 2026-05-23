@@ -577,22 +577,94 @@ body {
   font-size: 0.85rem;
 }
 
+/* Mobile tab bar — hidden on desktop */
+.mobile-tabs {
+  display: none;
+}
+
 /* Responsive */
 @media (max-width: 850px) {
-  .app-container {
-    padding: 0.75rem;
+  /* Use dvh so the layout accounts for the mobile browser chrome */
+  body {
+    overflow: auto;
   }
+
+  .app-container {
+    height: 100dvh;
+    padding: 0.75rem 0.75rem 0;
+  }
+
+  .mobile-tabs {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .mobile-tab {
+    flex: 1;
+    padding: 0.5rem;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    color: var(--color-text-muted);
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    cursor: pointer;
+    position: relative;
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+
+  .mobile-tab.active {
+    border-color: rgba(167, 139, 250, 0.4);
+    color: var(--color-accent);
+    background: rgba(167, 139, 250, 0.06);
+  }
+
+  .tab-dot {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-accent);
+  }
+
   .main-content {
     flex-direction: column;
-    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    gap: 0;
+    margin-top: 0.75rem;
   }
+
+  .mobile-hidden {
+    display: none;
+  }
+
   .chat-area {
-    flex: 2;
-    min-height: 450px;
+    flex: 1;
+    min-height: 0;
   }
+
   .matches-panel {
-    flex: none;
-    height: auto;
-    max-height: 400px;
+    flex: 1;
+    min-height: 0;
+    border-radius: var(--radius-card);
+  }
+
+  .chat-input-container {
+    padding: 0.75rem;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .input-form {
+    gap: 0.4rem;
+  }
+
+  .gender-select {
+    display: none;
   }
 }
