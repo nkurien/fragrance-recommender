@@ -211,6 +211,19 @@ export default function App() {
 
           {/* Chat Input Bar */}
           <div className="chat-input-container">
+            <div className="mobile-gender-toggles">
+              {[['', 'All'], ['women', 'Female'], ['men', 'Male'], ['unisex', 'Unisex']].map(([val, label]) => (
+                <button
+                  key={val}
+                  type="button"
+                  className={`gender-toggle ${genderFilter === val ? 'active' : ''}`}
+                  onClick={() => setGenderFilter(val)}
+                  disabled={loading}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <form onSubmit={handleSend} className="input-form">
               <input
                 type="text"

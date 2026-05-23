@@ -577,8 +577,12 @@ body {
   font-size: 0.85rem;
 }
 
-/* Mobile tab bar — hidden on desktop */
+/* Mobile tab bar and gender toggles — hidden on desktop */
 .mobile-tabs {
+  display: none;
+}
+
+.mobile-gender-toggles {
   display: none;
 }
 
@@ -666,5 +670,35 @@ body {
 
   .gender-select {
     display: none;
+  }
+
+  .mobile-gender-toggles {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .gender-toggle {
+    flex: 1;
+    padding: 0.4rem 0;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    color: var(--color-text-muted);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+  }
+
+  .gender-toggle.active {
+    border-color: rgba(167, 139, 250, 0.4);
+    color: var(--color-accent);
+    background: rgba(167, 139, 250, 0.06);
+  }
+
+  .gender-toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 }
