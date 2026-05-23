@@ -543,6 +543,24 @@ body {
 }
 
 /* Empty Matches Placeholder */
+.show-more-btn {
+  width: 100%;
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.show-more-btn:hover {
+  border-color: rgba(167, 139, 250, 0.35);
+  color: var(--color-accent);
+}
+
 .empty-matches {
   display: flex;
   flex-direction: column;

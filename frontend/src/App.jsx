@@ -53,6 +53,7 @@ export default function App() {
   const [genderFilter, setGenderFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [matches, setMatches] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(5);
   
   const messagesEndRef = useRef(null);
 
@@ -98,6 +99,7 @@ export default function App() {
       setMessages(prev => [...prev, { sender: 'sommelier', text: data.recommendation }]);
       if (data.matches && data.matches.length > 0) {
         setMatches(data.matches);
+        setVisibleCount(5);
       }
     } catch (error) {
       console.error(error);
@@ -229,7 +231,7 @@ export default function App() {
             </div>
           ) : (
             <div className="matches-list">
-              {matches.map((match, index) => (
+              {matches.slice(0, visibleCount).map((match, index) => (
                 <div key={index} className={`match-card${match.url ? ' match-card--linked' : ''}`}
                   onClick={() => match.url && window.open(match.url, '_blank', 'noopener,noreferrer')}
                 >
@@ -275,6 +277,11 @@ export default function App() {
                   )}
                 </div>
               ))}
+              {visibleCount < matches.length && (
+                <button className="show-more-btn" onClick={() => setVisibleCount(matches.length)}>
+                  Show more
+                </button>
+              )}
             </div>
           )}
         </aside>
