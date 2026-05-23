@@ -115,7 +115,7 @@ export default function App() {
         <div className="logo-section">
           <span className="logo-icon"><BottleIcon /></span>
           <div>
-            <h1>ScentSommelier</h1>
+            <h1>Fragrance Finder</h1>
             <span>Conversational Recommender</span>
           </div>
         </div>

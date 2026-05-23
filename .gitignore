@@ -35,3 +35,5 @@ data/*.json
 !data/.gitkeep
 
 .vscode
+.vercel
+.env*
