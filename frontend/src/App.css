@@ -469,6 +469,33 @@ body {
   margin-top: 0.1rem;
 }
 
+.match-scores {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.1rem;
+}
+
+.score-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.score-match {
+  background: rgba(167, 139, 250, 0.12);
+  color: var(--color-accent);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+}
+
+.score-popularity {
+  background: rgba(56, 189, 248, 0.08);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
 .match-meta {
   display: flex;
   gap: 0.75rem;

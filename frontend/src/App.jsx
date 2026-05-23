@@ -240,6 +240,18 @@ export default function App() {
                     </div>
                     {match.url && <span className="match-link-icon">↗</span>}
                   </div>
+                  <div className="match-scores">
+                    {match.match_score != null && (
+                      <span className="score-badge score-match" title="Scent similarity to your description">
+                        Match {match.match_score}%
+                      </span>
+                    )}
+                    {match.popularity_score != null && (
+                      <span className="score-badge score-popularity" title="Popularity based on review count">
+                        Popularity {match.popularity_score}%
+                      </span>
+                    )}
+                  </div>
                   <div className="match-meta">
                     <span>{match.gender || 'Unisex'}</span>
                     {match.rating && (

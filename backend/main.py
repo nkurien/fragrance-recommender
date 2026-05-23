@@ -80,6 +80,8 @@ class FragranceMatch(BaseModel):
     base_notes: Optional[str]
     main_accords: Optional[str]
     url: Optional[str]
+    match_score: Optional[float]
+    popularity_score: Optional[float]
 
 class RecommendResponse(BaseModel):
     recommendation: str
@@ -211,7 +213,16 @@ def recommend(request: RecommendRequest):
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        for _, row in scored[:5]:
+        # Absolute scoring — not normalised against the pool so scores are
+        # meaningful across different queries.
+        # Match:      raw cosine similarity (0–1) as a percentage.
+        # Popularity: log-scaled against 50k reviews as the "100%" anchor —
+        #             a well-known mainstream fragrance sits around that mark.
+        POPULARITY_ANCHOR = math.log1p(50_000)
+
+        for blended, row in scored[:5]:
+            match_pct      = round((1 - row[10]) * 100)
+            popularity_pct = min(round(math.log1p(row[4] or 0) / POPULARITY_ANCHOR * 100), 100)
             matches.append(FragranceMatch(
                 name=row[0],
                 brand=row[1],
@@ -222,7 +233,9 @@ def recommend(request: RecommendRequest):
                 middle_notes=row[6],
                 base_notes=row[7],
                 main_accords=row[8],
-                url=row[9]
+                url=row[9],
+                match_score=match_pct,
+                popularity_score=popularity_pct,
             ))
             
     except Exception as e:
