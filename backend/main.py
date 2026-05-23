@@ -1,6 +1,7 @@
 import os
 import math
 import time
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -65,9 +66,14 @@ if settings.groq_api_key:
     groq_client = Groq(api_key=settings.groq_api_key)
 
 # Pydantic schemas
+class ChatMessage(BaseModel):
+    role: str  # 'user' or 'assistant'
+    content: str
+
 class RecommendRequest(BaseModel):
     description: str
-    gender: Optional[str] = None # Optional: 'male', 'female', 'unisex'
+    gender: Optional[str] = None
+    history: Optional[List[ChatMessage]] = []
 
 class FragranceMatch(BaseModel):
     name: str
@@ -121,37 +127,55 @@ def health_check():
         "local_embeddings": "loaded"
     }
 
-def resolve_query_to_notes(description: str, conn) -> tuple[str, str | None]:
+def rewrite_query(description: str, history: list, gender: str | None = None) -> dict:
     """
-    If the user's query mentions a known fragrance name, look it up in the DB and
-    return its olfactory profile as the embedding text + its name to exclude from results.
-    Falls back to the original description if no match is found.
-    Returns (embedding_text, exclude_name_or_None).
+    Use a fast LLM to rewrite the user's conversational query into a structured
+    scent profile that matches the embedding space, and extract any brand intent.
+
+    Returns a dict with:
+      - embedding_text: structured profile for vector search
+      - brand_filter:   brand to restrict results to, or null
+      - exclude_name:   specific fragrance name to exclude (when user asks for similar to X)
     """
-    cur = conn.cursor()
-    # Use DB-side ILIKE to find fragrances whose name appears as a substring in the user query.
-    # Pick the longest matching name to avoid partial matches (e.g. "Good" matching "Good Girl").
-    cur.execute(
-        """
-        SELECT name, brand, top_notes, middle_notes, base_notes, main_accords, gender
-        FROM fragrances
-        WHERE %s ILIKE '%%' || name || '%%'
-        ORDER BY LENGTH(name) DESC
-        LIMIT 1;
-        """,
-        (description,)
+    gender_hint = f" The user has selected a gender filter: {gender}." if gender else ""
+    system = (
+        f"You are a fragrance expert.{gender_hint} Interpret the user's query and return a JSON object with exactly these fields:\n"
+        "- \"embedding_text\": structured scent description in this format: "
+        "\"Gender: <men|women|unisex>. Notes: <comma-separated notes>. Accords: <comma-separated accords>\". "
+        "If the user references a specific fragrance by name, describe its known scent profile in notes/accords. "
+        "Use conversation history to resolve follow-ups like 'something newer' or 'by that brand'.\n"
+        "- \"brand_filter\": lowercase hyphenated brand slug (e.g. 'creed', 'carolina-herrera') ONLY if the user "
+        "explicitly asks for a specific brand in their current message (e.g. 'recommend me a Creed', 'show me Dior'). "
+        "null if the brand appears only in previous assistant responses or if the user wants to avoid a brand.\n"
+        "- \"exclude_name\": lowercase hyphenated fragrance name slug (e.g. 'good-girl', 'aventus') if the user "
+        "wants something SIMILAR TO a named fragrance, so we exclude that fragrance from results. null otherwise.\n"
+        "Return ONLY valid JSON. No explanation, no markdown."
     )
-    row = cur.fetchone()
-    if row:
-        name, brand, top, mid, base, accords, gender = row
-        print(f"Resolved query to known fragrance: '{name}' by '{brand}' — embedding its notes profile.")
-        notes_text = (
-            f"Gender: {gender or ''}. "
-            f"Notes: {top or ''}, {mid or ''}, {base or ''}. "
-            f"Accords: {accords or ''}"
+
+    history_messages = [{"role": m["role"], "content": m["content"]} for m in history[-6:]]
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system},
+                *history_messages,
+                {"role": "user", "content": description},
+            ],
+            max_tokens=200,
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
-        return notes_text, name
-    return description, None
+        result = json.loads(response.choices[0].message.content)
+        print(f"Query rewrite: {result}")
+        return {
+            "embedding_text": result.get("embedding_text") or description,
+            "brand_filter":   result.get("brand_filter"),
+            "exclude_name":   result.get("exclude_name"),
+        }
+    except Exception as e:
+        print(f"Query rewrite failed ({e}), falling back to raw query.")
+        return {"embedding_text": description, "brand_filter": None, "exclude_name": None}
 
 @app.post("/api/recommend", response_model=RecommendResponse)
 def recommend(request: RecommendRequest):
@@ -165,8 +189,15 @@ def recommend(request: RecommendRequest):
     try:
         conn = db_pool.getconn()
 
-        # 1. Resolve query: if user named a specific fragrance, embed its notes profile instead
-        embedding_query, exclude_name = resolve_query_to_notes(request.description, conn)
+        # 1. Rewrite the conversational query into a structured scent profile
+        history_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
+        rewrite = rewrite_query(request.description, history_dicts, gender=request.gender)
+
+        embedding_query = rewrite.get("embedding_text") or request.description
+        brand_filter    = rewrite.get("brand_filter")
+        exclude_name    = rewrite.get("exclude_name")
+        brand_hint      = brand_filter  # passed to LLM prompt for context
+
         print(f"Generating embedding for: '{embedding_query[:120]}...'")
         query_vector = get_query_embedding(embedding_query)
 
@@ -181,10 +212,16 @@ def recommend(request: RecommendRequest):
             conditions.append("LOWER(gender) = LOWER(%s)")
             params.append(request.gender)
 
-        # Exclude the source fragrance itself from "similar to X" results
+        if brand_filter:
+            # Brands are slugified in the DB (e.g. "carolina-herrera"), use fuzzy match
+            conditions.append("LOWER(brand) LIKE LOWER(%s)")
+            params.append(f"%{brand_filter.replace(' ', '-')}%")
+
+        # Exclude the source fragrance itself from "similar to X" results.
+        # Names are slugified in DB so use fuzzy match rather than exact equality.
         if exclude_name:
-            conditions.append("LOWER(name) != LOWER(%s)")
-            params.append(exclude_name)
+            conditions.append("LOWER(name) NOT LIKE LOWER(%s)")
+            params.append(f"%{exclude_name.replace(' ', '-')}%")
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query_sql = f"""
@@ -270,44 +307,57 @@ def recommend(request: RecommendRequest):
     # 4. Invoke LLM reasoning on Groq
     system_prompt = (
         "You are an elegant, highly knowledgeable, and poetic fragrance sommelier.\n"
-        "Your task is to recommend the best fragrances from the provided list of candidates "
-        "that match what the user is looking for.\n\n"
+        "Your task is to recommend the best fragrances from the provided candidate list.\n\n"
         "RULES:\n"
-        "1. Recommend exactly 2-3 fragrances from the list below.\n"
-        "2. Do NOT invent, hallucinate, or suggest any fragrance that is not in the candidate list.\n"
-        "3. For each recommendation, describe why it fits using poetic, sensory, and engaging language "
-        "referencing specific notes (top, middle, base) or main accords. Keep it to 2-3 sentences per fragrance.\n"
-        "4. Be warm and welcoming.\n"
-        "5. Do NOT open with salutations like 'Dear friend', 'My dear', or any similar greeting. Get straight to the recommendations."
+        "1. Recommend 2-3 fragrances. If the candidate list does not contain enough good matches, "
+        "recommend fewer — never pad with poor fits.\n"
+        "2. CRITICAL: You may ONLY recommend fragrances that appear verbatim in the candidate list. "
+        "Do not invent, recall from memory, or suggest any fragrance not in the list.\n"
+        "3. For each recommendation, describe why it fits using poetic, sensory language referencing "
+        "specific notes or accords. Keep it to 2-3 sentences per fragrance.\n"
+        "4. Be warm and welcoming. Do NOT open with salutations like 'Dear friend' or 'My dear'.\n"
+        "5. Use conversation history to understand follow-up requests in context.\n"
+        "6. Format your response using markdown: bold (**name**) each fragrance name, "
+        "and use a blank line between each recommendation."
     )
-    
+
+    brand_context = (
+        f"\nNote: the user's query references the brand '{brand_hint}'. "
+        "Use your judgement — prefer candidates from that brand if the user wants them; "
+        "handle 'not X' or 'similar to X' accordingly."
+    ) if brand_hint else ""
+
     user_prompt = (
-        f"The user wants: \"{request.description}\"\n\n"
-        f"Candidate Fragrances:\n{candidates_text}\n"
+        f"The user wants: \"{request.description}\"{brand_context}\n\n"
+        f"Candidate Fragrances (you may ONLY recommend from this list):\n{candidates_text}\n"
         f"Recommend the best matches and explain why."
     )
-    
+
+    history_messages = [
+        {"role": msg.role, "content": msg.content}
+        for msg in (request.history or [])[-6:]
+    ]
+
+    recommendation_text = None
+
     try:
         chat_completion = groq_client.chat.completions.create(
-            # llama-3.1-8b-instant is standard, low-latency, and active on Groq
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                *history_messages,
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=800,
-            temperature=0.7
+            max_tokens=1000,
+            temperature=0.4,
         )
         recommendation_text = chat_completion.choices[0].message.content
-        
     except Exception as e:
-        print(f"Groq API Error: {e}")
-        # Soft fallback explanation if LLM fails, listing candidates directly
-        fallback_matches = ", ".join([f"{m.name} by {m.brand}" for m in matches[:3]])
+        print(f"Groq API error: {e}")
+        fallback = ", ".join([f"{m.name} by {m.brand}" for m in matches[:3]])
         recommendation_text = (
-            f"Here are top matches that fit your profile: {fallback_matches}. "
-            "(Apologies, my sommelier reasoning module is currently resting, but these candidates "
-            "closely match your description based on database records!)"
+            f"Here are top matches that fit your profile: {fallback}. "
+            "(Apologies, my sommelier reasoning module is currently resting!)"
         )
 
     return RecommendResponse(

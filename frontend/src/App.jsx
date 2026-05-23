@@ -82,6 +82,13 @@ export default function App() {
 
     try {
       const apiUrl = import.meta.env.VITE_API_URL || '';
+
+      // Build conversation history from prior messages, excluding the initial greeting
+      const history = messages.slice(1).map(m => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.text
+      }));
+
       const response = await fetch(`${apiUrl}/api/recommend`, {
         method: 'POST',
         headers: {
@@ -89,7 +96,8 @@ export default function App() {
         },
         body: JSON.stringify({
           description: userMessage,
-          gender: genderFilter || null
+          gender: genderFilter || null,
+          history
         })
       });
 
