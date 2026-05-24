@@ -9,3 +9,4 @@ pydantic-settings
 python-dotenv
 pgvector
 sentence-transformers
+pytest

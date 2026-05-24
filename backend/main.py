@@ -94,6 +94,43 @@ class RecommendResponse(BaseModel):
     recommendation: str
     matches: List[FragranceMatch]
 
+POPULARITY_ANCHOR = math.log1p(50_000)
+
+
+def _build_conditions(
+    gender: str | None,
+    brand_filter: str | None,
+    exclude_name: str | None,
+) -> tuple[list, list]:
+    """Return (conditions, params) for the pgvector WHERE clause."""
+    conditions: list = []
+    params: list = []
+    if gender:
+        conditions.append("LOWER(gender) = LOWER(%s)")
+        params.append(gender)
+    if brand_filter:
+        conditions.append("LOWER(brand) LIKE LOWER(%s)")
+        params.append(f"%{brand_filter.replace(' ', '-')}%")
+    if exclude_name:
+        conditions.append("LOWER(name) NOT LIKE LOWER(%s)")
+        params.append(f"%{exclude_name.replace(' ', '-')}%")
+    return conditions, params
+
+
+def _score_and_rank(rows: list) -> list:
+    """Re-rank DB rows: 50% similarity + 35% log-popularity + 15% rating."""
+    max_log_count = max((math.log1p(r[4] or 0) for r in rows), default=1) or 1
+    scored = []
+    for row in rows:
+        similarity = 1 - row[11]
+        popularity = math.log1p(row[4] or 0) / max_log_count
+        quality    = (float(row[3]) / 5.0) if row[3] is not None else 0
+        score      = 0.50 * similarity + 0.35 * popularity + 0.15 * quality
+        scored.append((score, row))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
 def get_query_embedding(query_text: str) -> List[float]:
     try:
         # Encode user query using the local model
@@ -145,8 +182,10 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
         "If the user references a specific fragrance by name, describe its known scent profile in notes/accords. "
         "Use conversation history to resolve follow-ups like 'something newer' or 'by that brand'.\n"
         "- \"brand_filter\": lowercase hyphenated brand slug (e.g. 'creed', 'carolina-herrera') ONLY if the user "
-        "explicitly asks for a specific brand in their current message (e.g. 'recommend me a Creed', 'show me Dior'). "
-        "null if the brand appears only in previous assistant responses or if the user wants to avoid a brand.\n"
+        "explicitly wants results FROM a specific brand (e.g. 'recommend me a Creed', 'show me Dior fragrances'). "
+        "IMPORTANT: set to null when the brand only identifies a source fragrance in a 'similar to' query "
+        "(e.g. 'something like Aventus by Creed' → brand_filter=null, exclude_name='aventus'). "
+        "Also null if the brand appears only in previous assistant responses or if the user wants to avoid a brand.\n"
         "- \"exclude_name\": lowercase hyphenated fragrance name slug (e.g. 'good-girl', 'aventus') if the user "
         "wants something SIMILAR TO a named fragrance, so we exclude that fragrance from results. null otherwise.\n"
         "Return ONLY valid JSON. No explanation, no markdown."
@@ -194,9 +233,11 @@ def recommend(request: RecommendRequest):
         rewrite = rewrite_query(request.description, history_dicts, gender=request.gender)
 
         embedding_query = rewrite.get("embedding_text") or request.description
-        brand_filter    = rewrite.get("brand_filter")
         exclude_name    = rewrite.get("exclude_name")
-        brand_hint      = brand_filter  # passed to LLM prompt for context
+        # If the user wants something *similar to* a named fragrance, the brand in their
+        # message identifies the source — it is not a request to restrict results to that brand.
+        brand_filter    = rewrite.get("brand_filter") if not exclude_name else None
+        brand_hint      = rewrite.get("brand_filter")  # passed to LLM prompt for context
 
         print(f"Generating embedding for: '{embedding_query[:120]}...'")
         query_vector = get_query_embedding(embedding_query)
@@ -204,25 +245,7 @@ def recommend(request: RecommendRequest):
         # 2. Query Postgres pgvector
         cur = conn.cursor()
 
-        # Build vector search query using cosine distance operator <=>
-        conditions = []
-        params = [query_vector]
-
-        if request.gender:
-            conditions.append("LOWER(gender) = LOWER(%s)")
-            params.append(request.gender)
-
-        if brand_filter:
-            # Brands are slugified in the DB (e.g. "carolina-herrera"), use fuzzy match
-            conditions.append("LOWER(brand) LIKE LOWER(%s)")
-            params.append(f"%{brand_filter.replace(' ', '-')}%")
-
-        # Exclude the source fragrance itself from "similar to X" results.
-        # Names are slugified in DB so use fuzzy match rather than exact equality.
-        if exclude_name:
-            conditions.append("LOWER(name) NOT LIKE LOWER(%s)")
-            params.append(f"%{exclude_name.replace(' ', '-')}%")
-
+        conditions, filter_params = _build_conditions(request.gender, brand_filter, exclude_name)
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         query_sql = f"""
             SELECT name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url,
@@ -232,31 +255,10 @@ def recommend(request: RecommendRequest):
             ORDER BY distance LIMIT 30;
         """
         # embedding vector must be first param for the <=> operator
-        cur.execute(query_sql, [query_vector] + params[1:])
+        cur.execute(query_sql, [query_vector] + filter_params)
         rows = cur.fetchall()
 
-        # Re-rank the top-30 candidates by a blended score:
-        #   50% scent similarity + 35% log-scaled popularity + 15% rating value
-        # log(rating_count) is used so the gap between 100→10k reviews matters
-        # more than 50k→60k. Scores are normalized against the candidate pool.
-        max_log_count = max((math.log1p(r[4] or 0) for r in rows), default=1) or 1
-        scored = []
-        for row in rows:
-            distance   = row[11]
-            similarity = 1 - distance                                        # higher = closer match
-            popularity = math.log1p(row[4] or 0) / max_log_count            # 0–1
-            quality    = (float(row[3]) / 5.0) if row[3] is not None else 0 # 0–1
-            score      = 0.50 * similarity + 0.35 * popularity + 0.15 * quality
-            scored.append((score, row))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Absolute scoring — not normalised against the pool so scores are
-        # meaningful across different queries.
-        # Match:      raw cosine similarity (0–1) as a percentage.
-        # Popularity: log-scaled against 50k reviews as the "100%" anchor —
-        #             a well-known mainstream fragrance sits around that mark.
-        POPULARITY_ANCHOR = math.log1p(50_000)
+        scored = _score_and_rank(rows)
 
         for blended, row in scored[:30]:
             match_pct      = round((1 - row[11]) * 100)
