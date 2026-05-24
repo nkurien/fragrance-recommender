@@ -210,6 +210,7 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
             max_tokens=200,
             temperature=0.1,
             response_format={"type": "json_object"},
+            timeout=30,
         )
         result = json.loads(response.choices[0].message.content)
         print(f"Query rewrite: {result}")
@@ -382,6 +383,7 @@ def recommend(request: RecommendRequest):
             ],
             max_tokens=1000,
             temperature=0.4,
+            timeout=30,
         )
         recommendation_text = chat_completion.choices[0].message.content
     except RateLimitError as e:
