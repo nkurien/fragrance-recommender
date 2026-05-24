@@ -409,3 +409,41 @@ def test_brand_filter_nullified_when_exclude_name_set(
         assert "lower(brand) like" in executed_query.lower()
     else:
         assert "lower(brand) like" not in executed_query.lower()
+
+
+# ---------------------------------------------------------------------------
+# LLM candidate cap
+# ---------------------------------------------------------------------------
+
+
+def test_llm_receives_at_most_7_candidates(client_with_mocks):
+    """Ensure the recommendation prompt is capped at 7 candidates even when 30 rows are returned."""
+    mock_groq, mock_cur, client = client_with_mocks
+
+    # Return 30 distinct rows from the DB
+    mock_cur.fetchall.return_value = [
+        make_row(name=f"frag-{i}", brand="brand-x", distance=0.1 + i * 0.01)
+        for i in range(30)
+    ]
+
+    mock_groq.chat.completions.create.side_effect = [
+        _mock_groq_response(
+            '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
+        ),
+        _mock_groq_response("Here are my picks."),
+    ]
+
+    response = client.post("/api/recommend", json={"description": "something floral"})
+    assert response.status_code == 200
+
+    # The second Groq call is the recommendation; grab its user-message content
+    second_call_messages = mock_groq.chat.completions.create.call_args_list[1][1]["messages"]
+    user_message = next(m["content"] for m in second_call_messages if m["role"] == "user")
+
+    # Count how many numbered candidate entries appear in the prompt
+    import re
+    candidate_entries = re.findall(r"^\d+\. \*\*", user_message, re.MULTILINE)
+    assert len(candidate_entries) <= 7
+
+    # Frontend still gets all 30
+    assert len(response.json()["matches"]) == 30

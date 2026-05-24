@@ -316,9 +316,9 @@ def recommend(request: RecommendRequest):
             matches=[],
         )
 
-    # 3. Format candidates for LLM prompt
+    # 3. Format top candidates for LLM prompt (sidebar still gets all matches)
     candidates_text = ""
-    for idx, match in enumerate(matches):
+    for idx, match in enumerate(matches[:7]):
         notes_desc = []
         if match.top_notes:
             notes_desc.append(f"Top: {match.top_notes}")
