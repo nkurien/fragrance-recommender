@@ -377,7 +377,7 @@ def recommend(request: RecommendRequest):
                 *history_messages,
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=1000,
+            max_tokens=450,
             temperature=0.4,
             timeout=30,
         )
