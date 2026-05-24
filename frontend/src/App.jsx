@@ -275,55 +275,63 @@ export default function App() {
             </div>
           ) : (
             <div className="matches-list">
-              {matches.slice(0, visibleCount).map((match) => (
-                <div key={match.name + match.brand} className={`match-card${match.url ? ' match-card--linked' : ''}`}
-                  onClick={() => match.url && window.open(match.url, '_blank', 'noopener,noreferrer')}
-                >
-                  <div className="match-header">
-                    <div>
-                      <div className="match-title">
-                        {match.name}
-                        {match.year && <span className="match-year">{match.year}</span>}
+              {matches.slice(0, visibleCount).map((match) => {
+                const Tag = match.url ? 'a' : 'div';
+                const linkProps = match.url
+                  ? { href: match.url, target: '_blank', rel: 'noopener noreferrer' }
+                  : {};
+                return (
+                  <Tag
+                    key={match.name + match.brand}
+                    className={`match-card${match.url ? ' match-card--linked' : ''}`}
+                    {...linkProps}
+                  >
+                    <div className="match-header">
+                      <div>
+                        <div className="match-title">
+                          {match.name}
+                          {match.year && <span className="match-year">{match.year}</span>}
+                        </div>
+                        <div className="match-brand">{match.brand}</div>
                       </div>
-                      <div className="match-brand">{match.brand}</div>
+                      {match.url && <span className="match-link-icon">↗</span>}
                     </div>
-                    {match.url && <span className="match-link-icon">↗</span>}
-                  </div>
-                  <div className="match-scores">
-                    {match.match_score != null && (
-                      <span className="score-badge score-match" title="Scent similarity to your description">
-                        Match {match.match_score}%
-                      </span>
-                    )}
-                    {match.popularity_score != null && (
-                      <span className="score-badge score-popularity" title="Popularity based on review count">
-                        Popularity {match.popularity_score}%
-                      </span>
-                    )}
-                  </div>
-                  <div className="match-meta">
-                    <span>{match.gender || 'Unisex'}</span>
-                    {match.rating && (
-                      <span className="rating-badge">★ {match.rating.toFixed(1)}/5</span>
-                    )}
-                    {match.rating_count && (
-                      <span className="rating-count">{match.rating_count.toLocaleString()} reviews</span>
-                    )}
-                  </div>
-                  <div className="notes-section">
-                    {match.top_notes && <div><strong>Top:</strong> {match.top_notes}</div>}
-                    {match.middle_notes && <div><strong>Middle:</strong> {match.middle_notes}</div>}
-                    {match.base_notes && <div><strong>Base:</strong> {match.base_notes}</div>}
-                  </div>
-                  {match.main_accords && (
-                    <div className="accords-tags">
-                      {match.main_accords.split(',').map((acc, i) => (
-                        <span key={i} className="tag">{acc.trim()}</span>
-                      ))}
+                    <div className="match-scores">
+                      {match.match_score != null && (
+                        <span className="score-badge score-match" title="Scent similarity to your description">
+                          Match {match.match_score}%
+                        </span>
+                      )}
+                      {match.popularity_score != null && (
+                        <span className="score-badge score-popularity" title="Popularity based on review count">
+                          Popularity {match.popularity_score}%
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                    <div className="match-meta">
+                      <span>{match.gender || 'Unisex'}</span>
+                      {match.rating && (
+                        <span className="rating-badge">★ {match.rating.toFixed(1)}/5</span>
+                      )}
+                      {match.rating_count && (
+                        <span className="rating-count">{match.rating_count.toLocaleString()} reviews</span>
+                      )}
+                    </div>
+                    <div className="notes-section">
+                      {match.top_notes && <div><strong>Top:</strong> {match.top_notes}</div>}
+                      {match.middle_notes && <div><strong>Middle:</strong> {match.middle_notes}</div>}
+                      {match.base_notes && <div><strong>Base:</strong> {match.base_notes}</div>}
+                    </div>
+                    {match.main_accords && (
+                      <div className="accords-tags">
+                        {match.main_accords.split(',').map((acc, i) => (
+                          <span key={i} className="tag">{acc.trim()}</span>
+                        ))}
+                      </div>
+                    )}
+                  </Tag>
+                );
+              })}
               {visibleCount < matches.length && (
                 <button className="show-more-btn" onClick={() => setVisibleCount(matches.length)}>
                   Show more
