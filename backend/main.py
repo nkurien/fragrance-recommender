@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from typing import Optional, List
-from groq import Groq
+from groq import Groq, RateLimitError
 import psycopg2
 from psycopg2.pool import SimpleConnectionPool
 from dotenv import load_dotenv
@@ -354,13 +354,15 @@ def recommend(request: RecommendRequest):
             temperature=0.4,
         )
         recommendation_text = chat_completion.choices[0].message.content
+    except RateLimitError as e:
+        print(f"Groq rate limit hit: {e}")
+        import re
+        retry_match = re.search(r"try again in (\d+m[\d.]+s|\d+[\d.]*s)", str(e))
+        retry_hint = f" Please try again in {retry_match.group(1)}." if retry_match else " Please try again in a few minutes."
+        recommendation_text = f"I've hit my usage limit for the moment and can't write descriptions right now.{retry_hint} In the meantime, here are the top matches I found: " + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3]) + "."
     except Exception as e:
         print(f"Groq API error: {e}")
-        fallback = ", ".join([f"{m.name} by {m.brand}" for m in matches[:3]])
-        recommendation_text = (
-            f"Here are top matches that fit your profile: {fallback}. "
-            "(Apologies, my sommelier reasoning module is currently resting!)"
-        )
+        recommendation_text = "My sommelier reasoning is unavailable right now. Here are the top matches I found: " + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3]) + "."
 
     return RecommendResponse(
         recommendation=recommendation_text,
