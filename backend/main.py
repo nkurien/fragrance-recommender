@@ -2,7 +2,7 @@ import math
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, List
 from groq import Groq, RateLimitError
@@ -69,7 +69,7 @@ class ChatMessage(BaseModel):
 class RecommendRequest(BaseModel):
     description: str
     gender: Optional[str] = None
-    history: Optional[List[ChatMessage]] = []
+    history: Optional[List[ChatMessage]] = Field(default_factory=list)
 
 
 class FragranceMatch(BaseModel):
