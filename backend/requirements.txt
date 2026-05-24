@@ -8,5 +8,5 @@ httpx
 pydantic-settings
 python-dotenv
 pgvector
-sentence-transformers
+sentence-transformers==5.5.1
 pytest
