@@ -416,6 +416,24 @@ def test_brand_filter_nullified_when_exclude_name_set(
 # ---------------------------------------------------------------------------
 
 
+def test_match_score_never_negative(client_with_mocks):
+    """Distance > 1.0 (worst-case cosine) must not produce a negative match_score."""
+    mock_groq, mock_cur, client = client_with_mocks
+
+    mock_cur.fetchall.return_value = [make_row(name="bad-match", distance=1.5)]
+    mock_groq.chat.completions.create.side_effect = [
+        _mock_groq_response(
+            '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
+        ),
+        _mock_groq_response("Here are my picks."),
+    ]
+
+    response = client.post("/api/recommend", json={"description": "floral"})
+    assert response.status_code == 200
+    match_score = response.json()["matches"][0]["match_score"]
+    assert match_score >= 0
+
+
 def test_llm_receives_at_most_7_candidates(client_with_mocks):
     """Ensure the recommendation prompt is capped at 7 candidates even when 30 rows are returned."""
     mock_groq, mock_cur, client = client_with_mocks

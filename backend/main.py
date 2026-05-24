@@ -281,7 +281,7 @@ def recommend(request: RecommendRequest):
         scored = _score_and_rank(rows)
 
         for blended, row in scored[:30]:
-            match_pct = round((1 - row[11]) * 100)
+            match_pct = max(0, round((1 - row[11]) * 100))
             popularity_pct = min(
                 round(math.log1p(row[4] or 0) / POPULARITY_ANCHOR * 100), 100
             )
