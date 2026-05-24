@@ -2,14 +2,19 @@
 Unit tests for fragrance recommender backend.
 Run with: pytest backend/tests/ -v
 """
+
 import json
-import math
 import pytest
 from unittest.mock import MagicMock, patch
+from fastapi.testclient import TestClient
+
+import main as main_module
+from main import _build_conditions, _score_and_rank, rewrite_query
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_row(
     name="test-frag",
@@ -25,53 +30,87 @@ def make_row(
     url="https://example.com",
     distance=0.2,
 ):
-    return (name, brand, gender, rating, rating_count, year,
-            top_notes, middle_notes, base_notes, main_accords, url, distance)
+    return (
+        name,
+        brand,
+        gender,
+        rating,
+        rating_count,
+        year,
+        top_notes,
+        middle_notes,
+        base_notes,
+        main_accords,
+        url,
+        distance,
+    )
 
 
 # ---------------------------------------------------------------------------
 # _build_conditions
 # ---------------------------------------------------------------------------
 
-from main import _build_conditions
 
-@pytest.mark.parametrize("gender,brand_filter,exclude_name,expected_conditions,expected_params", [
-    # No filters → empty
-    (None, None, None, [], []),
-    # Gender only
-    ("women", None, None,
-     ["LOWER(gender) = LOWER(%s)"],
-     ["women"]),
-    # Brand only (slug passthrough)
-    (None, "byredo", None,
-     ["LOWER(brand) LIKE LOWER(%s)"],
-     ["%byredo%"]),
-    # Brand with space → hyphenated in LIKE param
-    (None, "carolina herrera", None,
-     ["LOWER(brand) LIKE LOWER(%s)"],
-     ["%carolina-herrera%"]),
-    # Exclude name only (slug passthrough)
-    (None, None, "slow-dance",
-     ["LOWER(name) NOT LIKE LOWER(%s)"],
-     ["%slow-dance%"]),
-    # Exclude name with space → hyphenated
-    (None, None, "good girl",
-     ["LOWER(name) NOT LIKE LOWER(%s)"],
-     ["%good-girl%"]),
-    # Gender + brand
-    ("men", "creed", None,
-     ["LOWER(gender) = LOWER(%s)", "LOWER(brand) LIKE LOWER(%s)"],
-     ["men", "%creed%"]),
-    # Gender + exclude
-    ("women", None, "coco-mademoiselle",
-     ["LOWER(gender) = LOWER(%s)", "LOWER(name) NOT LIKE LOWER(%s)"],
-     ["women", "%coco-mademoiselle%"]),
-    # All three
-    ("unisex", "le-labo", "santal-33",
-     ["LOWER(gender) = LOWER(%s)", "LOWER(brand) LIKE LOWER(%s)", "LOWER(name) NOT LIKE LOWER(%s)"],
-     ["unisex", "%le-labo%", "%santal-33%"]),
-])
-def test_build_conditions(gender, brand_filter, exclude_name, expected_conditions, expected_params):
+@pytest.mark.parametrize(
+    "gender,brand_filter,exclude_name,expected_conditions,expected_params",
+    [
+        # No filters → empty
+        (None, None, None, [], []),
+        # Gender only
+        ("women", None, None, ["LOWER(gender) = LOWER(%s)"], ["women"]),
+        # Brand only (slug passthrough)
+        (None, "byredo", None, ["LOWER(brand) LIKE LOWER(%s)"], ["%byredo%"]),
+        # Brand with space → hyphenated in LIKE param
+        (
+            None,
+            "carolina herrera",
+            None,
+            ["LOWER(brand) LIKE LOWER(%s)"],
+            ["%carolina-herrera%"],
+        ),
+        # Exclude name only (slug passthrough)
+        (
+            None,
+            None,
+            "slow-dance",
+            ["LOWER(name) NOT LIKE LOWER(%s)"],
+            ["%slow-dance%"],
+        ),
+        # Exclude name with space → hyphenated
+        (None, None, "good girl", ["LOWER(name) NOT LIKE LOWER(%s)"], ["%good-girl%"]),
+        # Gender + brand
+        (
+            "men",
+            "creed",
+            None,
+            ["LOWER(gender) = LOWER(%s)", "LOWER(brand) LIKE LOWER(%s)"],
+            ["men", "%creed%"],
+        ),
+        # Gender + exclude
+        (
+            "women",
+            None,
+            "coco-mademoiselle",
+            ["LOWER(gender) = LOWER(%s)", "LOWER(name) NOT LIKE LOWER(%s)"],
+            ["women", "%coco-mademoiselle%"],
+        ),
+        # All three
+        (
+            "unisex",
+            "le-labo",
+            "santal-33",
+            [
+                "LOWER(gender) = LOWER(%s)",
+                "LOWER(brand) LIKE LOWER(%s)",
+                "LOWER(name) NOT LIKE LOWER(%s)",
+            ],
+            ["unisex", "%le-labo%", "%santal-33%"],
+        ),
+    ],
+)
+def test_build_conditions(
+    gender, brand_filter, exclude_name, expected_conditions, expected_params
+):
     conditions, params = _build_conditions(gender, brand_filter, exclude_name)
     assert conditions == expected_conditions
     assert params == expected_params
@@ -81,45 +120,57 @@ def test_build_conditions(gender, brand_filter, exclude_name, expected_condition
 # _score_and_rank
 # ---------------------------------------------------------------------------
 
-from main import _score_and_rank
 
-@pytest.mark.parametrize("rows,expected_first_name", [
-    # Lower distance (higher similarity) wins when rating/count are equal
-    (
-        [make_row(name="close",  distance=0.1, rating=4.0, rating_count=1000),
-         make_row(name="far",    distance=0.5, rating=4.0, rating_count=1000)],
-        "close",
-    ),
-    # Higher rating_count wins when distance and rating are equal
-    (
-        [make_row(name="popular",   distance=0.3, rating=4.0, rating_count=50000),
-         make_row(name="obscure",   distance=0.3, rating=4.0, rating_count=10)],
-        "popular",
-    ),
-    # Higher rating wins when distance and count are equal
-    (
-        [make_row(name="top-rated",  distance=0.3, rating=5.0, rating_count=500),
-         make_row(name="low-rated",  distance=0.3, rating=2.0, rating_count=500)],
-        "top-rated",
-    ),
-    # None rating treated as 0, does not crash
-    (
-        [make_row(name="no-rating",   distance=0.1, rating=None, rating_count=100),
-         make_row(name="has-rating",  distance=0.4, rating=4.5,  rating_count=100)],
-        "no-rating",  # similarity advantage outweighs missing rating
-    ),
-    # None rating_count treated as 0, does not crash; large similarity gap overrides popularity
-    (
-        [make_row(name="no-count",   distance=0.01, rating=4.0, rating_count=None),
-         make_row(name="has-count",  distance=0.9,  rating=4.0, rating_count=5000)],
-        "no-count",
-    ),
-    # Single row — no division-by-zero
-    (
-        [make_row(name="only-one", distance=0.3, rating=3.5, rating_count=200)],
-        "only-one",
-    ),
-])
+@pytest.mark.parametrize(
+    "rows,expected_first_name",
+    [
+        # Lower distance (higher similarity) wins when rating/count are equal
+        (
+            [
+                make_row(name="close", distance=0.1, rating=4.0, rating_count=1000),
+                make_row(name="far", distance=0.5, rating=4.0, rating_count=1000),
+            ],
+            "close",
+        ),
+        # Higher rating_count wins when distance and rating are equal
+        (
+            [
+                make_row(name="popular", distance=0.3, rating=4.0, rating_count=50000),
+                make_row(name="obscure", distance=0.3, rating=4.0, rating_count=10),
+            ],
+            "popular",
+        ),
+        # Higher rating wins when distance and count are equal
+        (
+            [
+                make_row(name="top-rated", distance=0.3, rating=5.0, rating_count=500),
+                make_row(name="low-rated", distance=0.3, rating=2.0, rating_count=500),
+            ],
+            "top-rated",
+        ),
+        # None rating treated as 0, does not crash
+        (
+            [
+                make_row(name="no-rating", distance=0.1, rating=None, rating_count=100),
+                make_row(name="has-rating", distance=0.4, rating=4.5, rating_count=100),
+            ],
+            "no-rating",  # similarity advantage outweighs missing rating
+        ),
+        # None rating_count treated as 0, does not crash; large similarity gap overrides popularity
+        (
+            [
+                make_row(name="no-count", distance=0.01, rating=4.0, rating_count=None),
+                make_row(name="has-count", distance=0.9, rating=4.0, rating_count=5000),
+            ],
+            "no-count",
+        ),
+        # Single row — no division-by-zero
+        (
+            [make_row(name="only-one", distance=0.3, rating=3.5, rating_count=200)],
+            "only-one",
+        ),
+    ],
+)
 def test_score_and_rank_first_place(rows, expected_first_name):
     scored = _score_and_rank(rows)
     assert scored[0][1][0] == expected_first_name
@@ -140,12 +191,15 @@ def test_score_and_rank_descending_order():
     assert scores == sorted(scores, reverse=True)
 
 
-@pytest.mark.parametrize("distance,rating,rating_count", [
-    (0.0,  5.0,   100000),
-    (1.0,  0.0,   0),
-    (0.5,  None,  None),
-    (0.99, 4.9,   1),
-])
+@pytest.mark.parametrize(
+    "distance,rating,rating_count",
+    [
+        (0.0, 5.0, 100000),
+        (1.0, 0.0, 0),
+        (0.5, None, None),
+        (0.99, 4.9, 1),
+    ],
+)
 def test_score_and_rank_score_bounds(distance, rating, rating_count):
     rows = [make_row(distance=distance, rating=rating, rating_count=rating_count)]
     scored = _score_and_rank(rows)
@@ -157,7 +211,6 @@ def test_score_and_rank_score_bounds(distance, rating, rating_count):
 # rewrite_query
 # ---------------------------------------------------------------------------
 
-from main import rewrite_query
 
 def _mock_groq_response(content: str):
     msg = MagicMock()
@@ -169,32 +222,51 @@ def _mock_groq_response(content: str):
     return response
 
 
-@pytest.mark.parametrize("mock_json,description,expected", [
-    # Full valid response
-    (
-        '{"embedding_text": "Notes: rose, oud", "brand_filter": "creed", "exclude_name": "aventus"}',
-        "something like Aventus by Creed",
-        {"embedding_text": "Notes: rose, oud", "brand_filter": "creed", "exclude_name": "aventus"},
-    ),
-    # Null brand and exclude
-    (
-        '{"embedding_text": "Notes: vanilla, musk", "brand_filter": null, "exclude_name": null}',
-        "something warm and cozy",
-        {"embedding_text": "Notes: vanilla, musk", "brand_filter": None, "exclude_name": None},
-    ),
-    # Missing optional fields default to None
-    (
-        '{"embedding_text": "Notes: bergamot"}',
-        "fresh citrus",
-        {"embedding_text": "Notes: bergamot", "brand_filter": None, "exclude_name": None},
-    ),
-    # Null/empty embedding_text falls back to raw description
-    (
-        '{"embedding_text": null, "brand_filter": null, "exclude_name": null}',
-        "my fallback description",
-        {"embedding_text": "my fallback description", "brand_filter": None, "exclude_name": None},
-    ),
-])
+@pytest.mark.parametrize(
+    "mock_json,description,expected",
+    [
+        # Full valid response
+        (
+            '{"embedding_text": "Notes: rose, oud", "brand_filter": "creed", "exclude_name": "aventus"}',
+            "something like Aventus by Creed",
+            {
+                "embedding_text": "Notes: rose, oud",
+                "brand_filter": "creed",
+                "exclude_name": "aventus",
+            },
+        ),
+        # Null brand and exclude
+        (
+            '{"embedding_text": "Notes: vanilla, musk", "brand_filter": null, "exclude_name": null}',
+            "something warm and cozy",
+            {
+                "embedding_text": "Notes: vanilla, musk",
+                "brand_filter": None,
+                "exclude_name": None,
+            },
+        ),
+        # Missing optional fields default to None
+        (
+            '{"embedding_text": "Notes: bergamot"}',
+            "fresh citrus",
+            {
+                "embedding_text": "Notes: bergamot",
+                "brand_filter": None,
+                "exclude_name": None,
+            },
+        ),
+        # Null/empty embedding_text falls back to raw description
+        (
+            '{"embedding_text": null, "brand_filter": null, "exclude_name": null}',
+            "my fallback description",
+            {
+                "embedding_text": "my fallback description",
+                "brand_filter": None,
+                "exclude_name": None,
+            },
+        ),
+    ],
+)
 def test_rewrite_query_parsing(mock_json, description, expected):
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = _mock_groq_response(mock_json)
@@ -212,16 +284,30 @@ def test_rewrite_query_exception_falls_back_to_raw():
     with patch("main.groq_client", mock_client):
         result = rewrite_query("woody and dark", history=[])
 
-    assert result == {"embedding_text": "woody and dark", "brand_filter": None, "exclude_name": None}
+    assert result == {
+        "embedding_text": "woody and dark",
+        "brand_filter": None,
+        "exclude_name": None,
+    }
 
 
-@pytest.mark.parametrize("history_turns,expected_call_count", [
-    # Empty history
-    ([], 1),
-    # 4 turns (within 6-turn window)
-    ([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"},
-      {"role": "user", "content": "more"}, {"role": "assistant", "content": "sure"}], 1),
-])
+@pytest.mark.parametrize(
+    "history_turns,expected_call_count",
+    [
+        # Empty history
+        ([], 1),
+        # 4 turns (within 6-turn window)
+        (
+            [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "more"},
+                {"role": "assistant", "content": "sure"},
+            ],
+            1,
+        ),
+    ],
+)
 def test_rewrite_query_passes_history(history_turns, expected_call_count):
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = _mock_groq_response(
@@ -241,8 +327,6 @@ def test_rewrite_query_passes_history(history_turns, expected_call_count):
 # brand_filter nullification when exclude_name is set  (the slow-dance fix)
 # ---------------------------------------------------------------------------
 
-from fastapi.testclient import TestClient
-import main as main_module
 
 @pytest.fixture()
 def client_with_mocks(monkeypatch):
@@ -269,23 +353,38 @@ def client_with_mocks(monkeypatch):
     return mock_groq, mock_cur, TestClient(main_module.app)
 
 
-@pytest.mark.parametrize("rewrite_result,expect_brand_in_sql", [
-    # "similar to" query: LLM returns brand + exclude → brand must NOT filter SQL
-    (
-        {"embedding_text": "Notes: rose", "brand_filter": "byredo", "exclude_name": "slow-dance"},
-        False,
-    ),
-    # Explicit brand request (no exclude): brand SHOULD filter SQL
-    (
-        {"embedding_text": "Notes: rose", "brand_filter": "byredo", "exclude_name": None},
-        True,
-    ),
-    # No brand, no exclude
-    (
-        {"embedding_text": "Notes: rose", "brand_filter": None, "exclude_name": None},
-        False,
-    ),
-])
+@pytest.mark.parametrize(
+    "rewrite_result,expect_brand_in_sql",
+    [
+        # "similar to" query: LLM returns brand + exclude → brand must NOT filter SQL
+        (
+            {
+                "embedding_text": "Notes: rose",
+                "brand_filter": "byredo",
+                "exclude_name": "slow-dance",
+            },
+            False,
+        ),
+        # Explicit brand request (no exclude): brand SHOULD filter SQL
+        (
+            {
+                "embedding_text": "Notes: rose",
+                "brand_filter": "byredo",
+                "exclude_name": None,
+            },
+            True,
+        ),
+        # No brand, no exclude
+        (
+            {
+                "embedding_text": "Notes: rose",
+                "brand_filter": None,
+                "exclude_name": None,
+            },
+            False,
+        ),
+    ],
+)
 def test_brand_filter_nullified_when_exclude_name_set(
     client_with_mocks, rewrite_result, expect_brand_in_sql
 ):
@@ -297,7 +396,10 @@ def test_brand_filter_nullified_when_exclude_name_set(
         _mock_groq_response("Here is my recommendation."),
     ]
 
-    client.post("/api/recommend", json={"description": "show me fragrances like slow dance by byredo"})
+    client.post(
+        "/api/recommend",
+        json={"description": "show me fragrances like slow dance by byredo"},
+    )
 
     # mock_cur is the cursor used during the request — check the SQL it received
     executed_query = mock_cur.execute.call_args[0][0]
