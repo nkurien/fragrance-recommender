@@ -43,20 +43,16 @@ app.add_middleware(
 # Note: psycopg2 is synchronous. By declaring FastAPI endpoints as standard synchronous functions
 # (using `def` instead of `async def`), FastAPI automatically executes them on a background thread pool,
 # ensuring the event loop is never blocked.
-try:
-    db_pool = SimpleConnectionPool(
-        1,
-        10,
-        dsn=settings.database_url,
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
-    )
-    print("Database connection pool initialized successfully with keepalives.")
-except Exception as e:
-    print(f"Failed to initialize database pool: {e}")
-    db_pool = None
+db_pool = SimpleConnectionPool(
+    1,
+    10,
+    dsn=settings.database_url,
+    keepalives=1,
+    keepalives_idle=30,
+    keepalives_interval=10,
+    keepalives_count=5,
+)
+print("Database connection pool initialized successfully with keepalives.")
 
 # Initialize Groq Client
 groq_client = None

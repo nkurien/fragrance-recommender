@@ -416,6 +416,16 @@ def test_brand_filter_nullified_when_exclude_name_set(
 # ---------------------------------------------------------------------------
 
 
+def test_recommend_returns_500_when_db_pool_none(monkeypatch):
+    """Safety-net: if db_pool is somehow None, the endpoint must return 500 not crash."""
+    monkeypatch.setattr(main_module, "db_pool", None)
+    monkeypatch.setattr(main_module, "groq_client", MagicMock())
+    client = TestClient(main_module.app)
+    response = client.post("/api/recommend", json={"description": "floral"})
+    assert response.status_code == 500
+    assert "uninitialized" in response.json()["detail"].lower()
+
+
 def test_match_score_never_negative(client_with_mocks):
     """Distance > 1.0 (worst-case cosine) must not produce a negative match_score."""
     mock_groq, mock_cur, client = client_with_mocks
