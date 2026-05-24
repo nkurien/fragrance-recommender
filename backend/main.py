@@ -4,8 +4,8 @@ import time
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, List
 from groq import Groq, RateLimitError
 import psycopg2
@@ -17,12 +17,10 @@ from sentence_transformers import SentenceTransformer
 load_dotenv()
 
 class Settings(BaseSettings):
-    database_url: str = Field(..., env="DATABASE_URL")
-    groq_api_key: str = Field(..., env="GROQ_API_KEY")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    database_url: str
+    groq_api_key: str
 
 # Initialize settings (fail fast on missing variables)
 settings = Settings()
