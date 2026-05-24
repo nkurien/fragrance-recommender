@@ -275,8 +275,8 @@ export default function App() {
             </div>
           ) : (
             <div className="matches-list">
-              {matches.slice(0, visibleCount).map((match, index) => (
-                <div key={index} className={`match-card${match.url ? ' match-card--linked' : ''}`}
+              {matches.slice(0, visibleCount).map((match) => (
+                <div key={match.name + match.brand} className={`match-card${match.url ? ' match-card--linked' : ''}`}
                   onClick={() => match.url && window.open(match.url, '_blank', 'noopener,noreferrer')}
                 >
                   <div className="match-header">
