@@ -4,9 +4,21 @@ A conversational fragrance recommender. Describe a mood, memory, or scent profil
 
 ## How it works
 
-User input is embedded using a local sentence-transformers model and compared against pre-computed fragrance embeddings in a PostgreSQL + pgvector database. The top 30 nearest candidates are re-ranked by a blended score (scent similarity, review count, rating) and the best results are passed to an LLM which writes a natural language explanation.
+Each request runs a two-stage LLM pipeline:
 
-Embeddings are generated from notes and accords only, so matches reflect how a fragrance smells rather than name recognition.
+1. **Query rewrite** (llama-3.1-8b-instant) converts conversational input into a structured scent profile and extracts any brand or exclusion intent for SQL filtering.
+2. **Vector search** embeds the rewritten profile locally (all-MiniLM-L6-v2) and compares it against pre-computed fragrance embeddings in PostgreSQL + pgvector. Top 30 candidates are re-ranked by a blended score: 50% scent similarity, 35% log-scaled popularity, 15% rating.
+3. **Recommendation** (llama-3.3-70b-versatile) picks 2-3 best fits from the top 7 candidates and writes a natural language explanation.
+
+Embeddings are generated from notes and accords only, not name or brand, so matches reflect how a fragrance smells rather than name recognition.
+
+## Design decisions
+
+**Why embed from notes/accords only?** Including the fragrance name or brand in the embedding would make "Aventus" match "Aventus" by name similarity rather than scent. The embeddings intentionally know nothing about identity, only smell.
+
+**Why a query rewrite stage?** Raw conversational input maps poorly to the `Notes: X. Accords: Y` format the embedding corpus was built on. A fast 8b model restructures the query into that format before embedding, which significantly improves retrieval quality. It also extracts brand and exclusion filters so "similar to Aventus by Creed" does not restrict results to Creed.
+
+**Why log-scale popularity?** Review counts range from single digits to 100k+. Log-scaling with a 50k anchor compresses that range into a meaningful signal without letting mainstream fragrances dominate every result.
 
 ## Stack
 
@@ -15,8 +27,9 @@ Embeddings are generated from notes and accords only, so matches reflect how a f
 | Frontend | React + Vite, deployed on Vercel |
 | Backend | FastAPI, deployed on Render |
 | Database | PostgreSQL + pgvector (Neon) |
-| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
-| LLM | Groq API (llama-3.1-8b-instant) |
+| Embeddings | sentence-transformers/all-MiniLM-L6-v2 (local, 384-dim) |
+| LLM (rewrite) | Groq -- llama-3.1-8b-instant |
+| LLM (recommendation) | Groq -- llama-3.3-70b-versatile |
 
 ## Architecture
 
@@ -24,11 +37,12 @@ Embeddings are generated from notes and accords only, so matches reflect how a f
 User (chat input)
     -> React frontend (Vercel)
     -> FastAPI backend (Render)
-        -> Embed query with all-MiniLM-L6-v2
-        -> pgvector cosine similarity search (Neon)
-        -> Re-rank by blended score (similarity + popularity + rating)
-        -> Groq LLM generates recommendation text
-    -> Matches with scores and explanation
+        -> llama-3.1-8b-instant: rewrite query to structured scent profile + filters
+        -> all-MiniLM-L6-v2: embed rewritten profile (local)
+        -> pgvector cosine search -> top 30 candidates (Neon)
+        -> re-rank: 50% similarity + 35% log-popularity + 15% rating
+        -> llama-3.3-70b-versatile: pick best 2-3, write descriptions
+    -> Ranked matches with scores and explanation
 ```
 
 ## Running locally
@@ -47,10 +61,15 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+Open [http://localhost:5173](http://localhost:5173). The frontend proxies `/api` to `localhost:8000` in dev.
 
 ## Data
 
-Source: Fragrantica dataset (~24k fragrances) via Kaggle.
+Source: Fragrantica dataset (~24k fragrances) via Kaggle (`fra_cleaned.csv`, semicolon-delimited, latin1 encoding).
 
-Each fragrance is embedded from its gender, notes (top, middle, base), and main accords using all-MiniLM-L6-v2 (384 dimensions). Embeddings are generated locally and uploaded to Neon via `scripts/embed_and_upload.py`.
+To re-embed and re-upload:
+```bash
+python scripts/embed_and_upload.py
+```
+
+This truncates and repopulates the `fragrances` table. Embeddings are generated locally and uploaded to Neon in a single batch.
