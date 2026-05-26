@@ -153,15 +153,18 @@ def health_check():
     # Verify DB pool is healthy
     db_status = "unconfigured"
     if db_pool:
+        conn = None
         try:
             conn = db_pool.getconn()
             cur = conn.cursor()
             cur.execute("SELECT 1;")
             cur.fetchone()
-            db_pool.putconn(conn)
             db_status = "healthy"
         except Exception as e:
             db_status = f"error: {str(e)}"
+        finally:
+            if conn:
+                db_pool.putconn(conn)
 
     return {
         "status": "healthy",

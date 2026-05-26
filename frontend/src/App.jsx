@@ -136,12 +136,13 @@ export default function App() {
                 setHasNewResults(true);
               }
             } else if (event.type === 'token') {
+              if (loading) setLoading(false);
               appendToken(event.text);
             } else if (event.type === 'error') {
               throw new Error(event.detail);
             }
           } catch (parseErr) {
-            if (parseErr.message !== parseErr.message) continue; // ignore JSON parse errors
+            if (parseErr instanceof SyntaxError) continue;
             throw parseErr;
           }
         }
