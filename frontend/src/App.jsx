@@ -80,6 +80,9 @@ export default function App() {
     setMessages(prev => [...prev, { sender: 'user', text: userMessage }]);
     setLoading(true);
 
+    // Add a placeholder sommelier message that we'll fill token by token
+    setMessages(prev => [...prev, { sender: 'sommelier', text: '', streaming: true }]);
+
     try {
       const apiUrl = import.meta.env.VITE_API_URL || '';
 
@@ -91,34 +94,71 @@ export default function App() {
 
       const response = await fetch(`${apiUrl}/api/recommend`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          description: userMessage,
-          gender: genderFilter || null,
-          history
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: userMessage, gender: genderFilter || null, history })
       });
 
       if (!response.ok) {
         throw new Error("Failed to retrieve recommendations from the sommelier.");
       }
 
-      const data = await response.json();
-      
-      setMessages(prev => [...prev, { sender: 'sommelier', text: data.recommendation }]);
-      if (data.matches && data.matches.length > 0) {
-        setMatches(data.matches);
-        setVisibleCount(5);
-        setHasNewResults(true);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const appendToken = (token) => {
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.streaming) {
+            updated[updated.length - 1] = { ...last, text: last.text + token };
+          }
+          return updated;
+        });
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // hold incomplete last line
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === 'matches') {
+              if (event.data && event.data.length > 0) {
+                setMatches(event.data);
+                setVisibleCount(5);
+                setHasNewResults(true);
+              }
+            } else if (event.type === 'token') {
+              appendToken(event.text);
+            } else if (event.type === 'error') {
+              throw new Error(event.detail);
+            }
+          } catch (parseErr) {
+            if (parseErr.message !== parseErr.message) continue; // ignore JSON parse errors
+            throw parseErr;
+          }
+        }
       }
+
+      // Finalise the streaming message
+      setMessages(prev => prev.map((m, i) =>
+        i === prev.length - 1 && m.streaming ? { ...m, streaming: false } : m
+      ));
     } catch (error) {
       console.error(error);
-      setMessages(prev => [...prev, { 
-        sender: 'sommelier', 
-        text: "My apologies. I encountered a slight disturbance in the air while sniffing out notes. Please make sure the backend is active and try again shortly!" 
-      }]);
+      // Replace the placeholder (or add new) error message
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        const errMsg = { sender: 'sommelier', text: "My apologies. I encountered a slight disturbance in the air while sniffing out notes. Please make sure the backend is active and try again shortly!" };
+        return last && last.streaming ? [...prev.slice(0, -1), errMsg] : [...prev, errMsg];
+      });
     } finally {
       setLoading(false);
     }

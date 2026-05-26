@@ -213,6 +213,7 @@ def test_score_and_rank_score_bounds(distance, rating, rating_count):
 
 
 def _mock_groq_response(content: str):
+    """Mock a non-streaming Groq response (used for the rewrite call)."""
     msg = MagicMock()
     msg.content = content
     choice = MagicMock()
@@ -220,6 +221,32 @@ def _mock_groq_response(content: str):
     response = MagicMock()
     response.choices = [choice]
     return response
+
+
+def _mock_groq_stream(text: str):
+    """Mock a streaming Groq response (used for the recommendation call)."""
+    delta = MagicMock()
+    delta.content = text
+    choice = MagicMock()
+    choice.delta = delta
+    chunk = MagicMock()
+    chunk.choices = [choice]
+    return iter([chunk])
+
+
+def _parse_stream(response) -> tuple[list, str]:
+    """Parse an NDJSON streaming response into (matches, recommendation_text)."""
+    matches = []
+    tokens = []
+    for line in response.text.strip().split("\n"):
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event["type"] == "matches":
+            matches = event["data"]
+        elif event["type"] == "token":
+            tokens.append(event["text"])
+    return matches, "".join(tokens)
 
 
 @pytest.mark.parametrize(
@@ -390,10 +417,10 @@ def test_brand_filter_nullified_when_exclude_name_set(
 ):
     mock_groq, mock_cur, client = client_with_mocks
 
-    # First Groq call → rewrite_query; second → recommendation text
+    # First Groq call → rewrite_query; second → streaming recommendation
     mock_groq.chat.completions.create.side_effect = [
         _mock_groq_response(json.dumps(rewrite_result)),
-        _mock_groq_response("Here is my recommendation."),
+        _mock_groq_stream("Here is my recommendation."),
     ]
 
     client.post(
@@ -435,13 +462,13 @@ def test_match_score_never_negative(client_with_mocks):
         _mock_groq_response(
             '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
         ),
-        _mock_groq_response("Here are my picks."),
+        _mock_groq_stream("Here are my picks."),
     ]
 
     response = client.post("/api/recommend", json={"description": "floral"})
     assert response.status_code == 200
-    match_score = response.json()["matches"][0]["match_score"]
-    assert match_score >= 0
+    matches, _ = _parse_stream(response)
+    assert matches[0]["match_score"] >= 0
 
 
 def test_llm_receives_at_most_7_candidates(client_with_mocks):
@@ -458,7 +485,7 @@ def test_llm_receives_at_most_7_candidates(client_with_mocks):
         _mock_groq_response(
             '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
         ),
-        _mock_groq_response("Here are my picks."),
+        _mock_groq_stream("Here are my picks."),
     ]
 
     response = client.post("/api/recommend", json={"description": "something floral"})
@@ -474,4 +501,5 @@ def test_llm_receives_at_most_7_candidates(client_with_mocks):
     assert len(candidate_entries) <= 7
 
     # Frontend still gets all 30
-    assert len(response.json()["matches"]) == 30
+    matches, _ = _parse_stream(response)
+    assert len(matches) == 30

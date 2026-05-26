@@ -2,6 +2,7 @@ import math
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, List
@@ -224,7 +225,7 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
         }
 
 
-@app.post("/api/recommend", response_model=RecommendResponse)
+@app.post("/api/recommend")
 def recommend(request: RecommendRequest):
     if not db_pool:
         raise HTTPException(
@@ -233,179 +234,186 @@ def recommend(request: RecommendRequest):
     if not groq_client:
         raise HTTPException(status_code=500, detail="Groq API client is unconfigured.")
 
-    conn = None
-    matches = []
-    try:
-        conn = db_pool.getconn()
+    def generate():
+        # --- Stage 1: rewrite + vector search (blocking, no yields yet) ---
+        conn = None
+        matches = []
+        brand_hint = None
+        db_error = None
 
-        # 1. Rewrite the conversational query into a structured scent profile
-        history_dicts = [
-            {"role": m.role, "content": m.content} for m in (request.history or [])
-        ]
-        rewrite = rewrite_query(
-            request.description, history_dicts, gender=request.gender
-        )
+        try:
+            conn = db_pool.getconn()
 
-        embedding_query = rewrite.get("embedding_text") or request.description
-        exclude_name = rewrite.get("exclude_name")
-        # If the user wants something *similar to* a named fragrance, the brand in their
-        # message identifies the source — it is not a request to restrict results to that brand.
-        brand_filter = rewrite.get("brand_filter") if not exclude_name else None
-        brand_hint = rewrite.get("brand_filter")  # passed to LLM prompt for context
-
-        print(f"Generating embedding for: '{embedding_query[:120]}...'")
-        query_vector = get_query_embedding(embedding_query)
-
-        # 2. Query Postgres pgvector
-        cur = conn.cursor()
-
-        conditions, filter_params = _build_conditions(
-            request.gender, brand_filter, exclude_name
-        )
-        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        query_sql = f"""
-            SELECT name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url,
-                   embedding <=> %s::vector AS distance
-            FROM fragrances
-            {where_clause}
-            ORDER BY distance LIMIT 30;
-        """
-        # embedding vector must be first param for the <=> operator
-        cur.execute(query_sql, [query_vector] + filter_params)
-        rows = cur.fetchall()
-
-        scored = _score_and_rank(rows)
-
-        for blended, row in scored[:30]:
-            match_pct = max(0, round((1 - row[11]) * 100))
-            popularity_pct = min(
-                round(math.log1p(row[4] or 0) / POPULARITY_ANCHOR * 100), 100
+            history_dicts = [
+                {"role": m.role, "content": m.content} for m in (request.history or [])
+            ]
+            rewrite = rewrite_query(
+                request.description, history_dicts, gender=request.gender
             )
-            matches.append(
-                FragranceMatch(
-                    name=row[0],
-                    brand=row[1],
-                    gender=row[2],
-                    rating=float(row[3]) if row[3] is not None else None,
-                    rating_count=row[4],
-                    year=row[5],
-                    top_notes=row[6],
-                    middle_notes=row[7],
-                    base_notes=row[8],
-                    main_accords=row[9],
-                    url=row[10],
-                    match_score=match_pct,
-                    popularity_score=popularity_pct,
+
+            embedding_query = rewrite.get("embedding_text") or request.description
+            exclude_name = rewrite.get("exclude_name")
+            brand_filter = rewrite.get("brand_filter") if not exclude_name else None
+            brand_hint = rewrite.get("brand_filter")
+
+            print(f"Generating embedding for: '{embedding_query[:120]}...'")
+            query_vector = get_query_embedding(embedding_query)
+
+            cur = conn.cursor()
+            conditions, filter_params = _build_conditions(
+                request.gender, brand_filter, exclude_name
+            )
+            where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+            query_sql = f"""
+                SELECT name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url,
+                       embedding <=> %s::vector AS distance
+                FROM fragrances
+                {where_clause}
+                ORDER BY distance LIMIT 30;
+            """
+            cur.execute(query_sql, [query_vector] + filter_params)
+            rows = cur.fetchall()
+
+            scored = _score_and_rank(rows)
+            for _blended, row in scored[:30]:
+                match_pct = max(0, round((1 - row[11]) * 100))
+                popularity_pct = min(
+                    round(math.log1p(row[4] or 0) / POPULARITY_ANCHOR * 100), 100
                 )
+                matches.append(
+                    FragranceMatch(
+                        name=row[0],
+                        brand=row[1],
+                        gender=row[2],
+                        rating=float(row[3]) if row[3] is not None else None,
+                        rating_count=row[4],
+                        year=row[5],
+                        top_notes=row[6],
+                        middle_notes=row[7],
+                        base_notes=row[8],
+                        main_accords=row[9],
+                        url=row[10],
+                        match_score=match_pct,
+                        popularity_score=popularity_pct,
+                    )
+                )
+        except Exception as e:
+            print(f"Database query error: {e}")
+            db_error = str(e)
+        finally:
+            if conn:
+                db_pool.putconn(conn)
+
+        if db_error:
+            yield json.dumps({"type": "error", "detail": f"Database query failed: {db_error}"}) + "\n"
+            return
+
+        # Send matches immediately so the sidebar populates without waiting for LLM
+        yield json.dumps({"type": "matches", "data": [m.model_dump() for m in matches]}) + "\n"
+
+        if not matches:
+            yield json.dumps({"type": "token", "text": "I couldn't find any fragrances matching your criteria. Try describing your preference in different terms!"}) + "\n"
+            yield json.dumps({"type": "done"}) + "\n"
+            return
+
+        # --- Stage 2: stream LLM recommendation tokens ---
+        candidates_text = ""
+        for idx, match in enumerate(matches[:7]):
+            notes_desc = []
+            if match.top_notes:
+                notes_desc.append(f"Top: {match.top_notes}")
+            if match.middle_notes:
+                notes_desc.append(f"Middle: {match.middle_notes}")
+            if match.base_notes:
+                notes_desc.append(f"Base: {match.base_notes}")
+            notes_str = "; ".join(notes_desc) if notes_desc else "No notes listed"
+
+            candidates_text += f"{idx + 1}. **{match.name}** by {match.brand}\n"
+            candidates_text += f"   - Profile: {match.gender or 'Unisex'}, Rating: {match.rating or 'N/A'}/5\n"
+            candidates_text += f"   - Notes: {notes_str}\n"
+            candidates_text += f"   - Accords: {match.main_accords or 'None'}\n\n"
+
+        system_prompt = (
+            "You are an elegant, highly knowledgeable, and poetic fragrance sommelier.\n"
+            "Your task is to recommend the best fragrances from the provided candidate list.\n\n"
+            "RULES:\n"
+            "1. Recommend 2-3 fragrances. If the candidate list does not contain enough good matches, "
+            "recommend fewer — never pad with poor fits.\n"
+            "2. CRITICAL: You may ONLY recommend fragrances that appear verbatim in the candidate list. "
+            "Do not invent, recall from memory, or suggest any fragrance not in the list.\n"
+            "3. For each recommendation, describe why it fits using poetic, sensory language referencing "
+            "specific notes or accords. Keep it to 2-3 sentences per fragrance.\n"
+            "4. Be warm and welcoming. Do NOT open with salutations like 'Dear friend' or 'My dear'.\n"
+            "5. Use conversation history to understand follow-up requests in context.\n"
+            "6. Format your response using markdown: bold (**name**) each fragrance name, "
+            "and use a blank line between each recommendation."
+        )
+
+        brand_context = (
+            (
+                f"\nNote: the user's query references the brand '{brand_hint}'. "
+                "Use your judgement — prefer candidates from that brand if the user wants them; "
+                "handle 'not X' or 'similar to X' accordingly."
             )
-
-    except Exception as e:
-        print(f"Database query error: {e}")
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
-    finally:
-        if conn:
-            db_pool.putconn(conn)
-
-    if not matches:
-        return RecommendResponse(
-            recommendation="I couldn't find any fragrances matching your criteria. Try describing your preference in different terms!",
-            matches=[],
+            if brand_hint
+            else ""
         )
 
-    # 3. Format top candidates for LLM prompt (sidebar still gets all matches)
-    candidates_text = ""
-    for idx, match in enumerate(matches[:7]):
-        notes_desc = []
-        if match.top_notes:
-            notes_desc.append(f"Top: {match.top_notes}")
-        if match.middle_notes:
-            notes_desc.append(f"Middle: {match.middle_notes}")
-        if match.base_notes:
-            notes_desc.append(f"Base: {match.base_notes}")
-        notes_str = "; ".join(notes_desc) if notes_desc else "No notes listed"
-
-        candidates_text += f"{idx + 1}. **{match.name}** by {match.brand}\n"
-        candidates_text += f"   - Profile: {match.gender or 'Unisex'}, Rating: {match.rating or 'N/A'}/5\n"
-        candidates_text += f"   - Notes: {notes_str}\n"
-        candidates_text += f"   - Accords: {match.main_accords or 'None'}\n\n"
-
-    # 4. Invoke LLM reasoning on Groq
-    system_prompt = (
-        "You are an elegant, highly knowledgeable, and poetic fragrance sommelier.\n"
-        "Your task is to recommend the best fragrances from the provided candidate list.\n\n"
-        "RULES:\n"
-        "1. Recommend 2-3 fragrances. If the candidate list does not contain enough good matches, "
-        "recommend fewer — never pad with poor fits.\n"
-        "2. CRITICAL: You may ONLY recommend fragrances that appear verbatim in the candidate list. "
-        "Do not invent, recall from memory, or suggest any fragrance not in the list.\n"
-        "3. For each recommendation, describe why it fits using poetic, sensory language referencing "
-        "specific notes or accords. Keep it to 2-3 sentences per fragrance.\n"
-        "4. Be warm and welcoming. Do NOT open with salutations like 'Dear friend' or 'My dear'.\n"
-        "5. Use conversation history to understand follow-up requests in context.\n"
-        "6. Format your response using markdown: bold (**name**) each fragrance name, "
-        "and use a blank line between each recommendation."
-    )
-
-    brand_context = (
-        (
-            f"\nNote: the user's query references the brand '{brand_hint}'. "
-            "Use your judgement — prefer candidates from that brand if the user wants them; "
-            "handle 'not X' or 'similar to X' accordingly."
-        )
-        if brand_hint
-        else ""
-    )
-
-    user_prompt = (
-        f'The user wants: "{request.description}"{brand_context}\n\n'
-        f"Candidate Fragrances (you may ONLY recommend from this list):\n{candidates_text}\n"
-        f"Recommend the best matches and explain why."
-    )
-
-    history_messages = [
-        {"role": msg.role, "content": msg.content}
-        for msg in (request.history or [])[-6:]
-    ]
-
-    recommendation_text = None
-
-    try:
-        chat_completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                *history_messages,
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=450,
-            temperature=0.4,
-            timeout=30,
-        )
-        recommendation_text = chat_completion.choices[0].message.content
-    except RateLimitError as e:
-        print(f"Groq rate limit hit: {e}")
-        import re
-
-        retry_match = re.search(r"try again in (\d+m[\d.]+s|\d+[\d.]*s)", str(e))
-        retry_hint = (
-            f" Please try again in {retry_match.group(1)}."
-            if retry_match
-            else " Please try again in a few minutes."
-        )
-        recommendation_text = (
-            f"I've hit my usage limit for the moment and can't write descriptions right now.{retry_hint} In the meantime, here are the top matches I found: "
-            + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3])
-            + "."
-        )
-    except Exception as e:
-        print(f"Groq API error: {e}")
-        recommendation_text = (
-            "My sommelier reasoning is unavailable right now. Here are the top matches I found: "
-            + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3])
-            + "."
+        user_prompt = (
+            f'The user wants: "{request.description}"{brand_context}\n\n'
+            f"Candidate Fragrances (you may ONLY recommend from this list):\n{candidates_text}\n"
+            f"Recommend the best matches and explain why."
         )
 
-    return RecommendResponse(recommendation=recommendation_text, matches=matches)
+        history_messages = [
+            {"role": msg.role, "content": msg.content}
+            for msg in (request.history or [])[-6:]
+        ]
+
+        try:
+            stream = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    *history_messages,
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=450,
+                temperature=0.4,
+                timeout=30,
+                stream=True,
+            )
+            for chunk in stream:
+                text = chunk.choices[0].delta.content or ""
+                if text:
+                    yield json.dumps({"type": "token", "text": text}) + "\n"
+        except RateLimitError as e:
+            print(f"Groq rate limit hit: {e}")
+            import re
+            retry_match = re.search(r"try again in (\d+m[\d.]+s|\d+[\d.]*s)", str(e))
+            retry_hint = (
+                f" Please try again in {retry_match.group(1)}."
+                if retry_match
+                else " Please try again in a few minutes."
+            )
+            fallback = (
+                f"I've hit my usage limit for the moment and can't write descriptions right now.{retry_hint} In the meantime, here are the top matches I found: "
+                + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3])
+                + "."
+            )
+            yield json.dumps({"type": "token", "text": fallback}) + "\n"
+        except Exception as e:
+            print(f"Groq API error: {e}")
+            fallback = (
+                "My sommelier reasoning is unavailable right now. Here are the top matches I found: "
+                + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3])
+                + "."
+            )
+            yield json.dumps({"type": "token", "text": fallback}) + "\n"
+
+        yield json.dumps({"type": "done"}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 if __name__ == "__main__":
