@@ -1,5 +1,6 @@
 import math
 import json
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -28,6 +29,7 @@ settings = Settings()
 # Load embedding model once at startup (lightweight, ~22MB)
 print("Loading local sentence-transformers/all-MiniLM-L6-v2 embedding model...")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model.encode("warmup")  # burn PyTorch JIT cost before first request
 
 app = FastAPI(title="Fragrance Recommender API")
 
@@ -132,11 +134,15 @@ def _score_and_rank(rows: list) -> list:
 
 
 def get_query_embedding(query_text: str) -> List[float]:
+    t0 = time.monotonic()
     try:
-        # Encode user query using the local model
-        return embedding_model.encode(query_text).tolist()
+        vector = embedding_model.encode(query_text).tolist()
+        elapsed = round((time.monotonic() - t0) * 1000)
+        print(f"[embed] {elapsed}ms")
+        return vector
     except Exception as e:
-        print(f"Error generating local embedding: {e}")
+        elapsed = round((time.monotonic() - t0) * 1000)
+        print(f"[embed] {elapsed}ms | FAILED ({e})")
         raise HTTPException(
             status_code=500, detail=f"Failed to generate query embedding: {str(e)}"
         )
@@ -196,6 +202,7 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
         {"role": m["role"], "content": m["content"]} for m in history[-6:]
     ]
 
+    t0 = time.monotonic()
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -204,20 +211,27 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
                 *history_messages,
                 {"role": "user", "content": description},
             ],
-            max_tokens=200,
+            max_tokens=300,
             temperature=0.1,
             response_format={"type": "json_object"},
             timeout=30,
         )
         result = json.loads(response.choices[0].message.content)
-        print(f"Query rewrite: {result}")
+        usage = response.usage
+        elapsed = round((time.monotonic() - t0) * 1000)
+        print(
+            f"[rewrite] {elapsed}ms | "
+            f"prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens} | "
+            f"result={result}"
+        )
         return {
             "embedding_text": result.get("embedding_text") or description,
             "brand_filter": result.get("brand_filter"),
             "exclude_name": result.get("exclude_name"),
         }
     except Exception as e:
-        print(f"Query rewrite failed ({e}), falling back to raw query.")
+        elapsed = round((time.monotonic() - t0) * 1000)
+        print(f"[rewrite] {elapsed}ms | FAILED ({e}), falling back to raw query")
         return {
             "embedding_text": description,
             "brand_filter": None,
@@ -236,6 +250,7 @@ def recommend(request: RecommendRequest):
 
     def generate():
         # --- Stage 1: rewrite + vector search (blocking, no yields yet) ---
+        t_request = time.monotonic()
         conn = None
         matches = []
         brand_hint = None
@@ -256,7 +271,6 @@ def recommend(request: RecommendRequest):
             brand_filter = rewrite.get("brand_filter") if not exclude_name else None
             brand_hint = rewrite.get("brand_filter")
 
-            print(f"Generating embedding for: '{embedding_query[:120]}...'")
             query_vector = get_query_embedding(embedding_query)
 
             cur = conn.cursor()
@@ -271,8 +285,10 @@ def recommend(request: RecommendRequest):
                 {where_clause}
                 ORDER BY distance LIMIT 30;
             """
+            t_db = time.monotonic()
             cur.execute(query_sql, [query_vector] + filter_params)
             rows = cur.fetchall()
+            print(f"[db] {round((time.monotonic() - t_db) * 1000)}ms | {len(rows)} rows")
 
             scored = _score_and_rank(rows)
             for _blended, row in scored[:30]:
@@ -371,6 +387,8 @@ def recommend(request: RecommendRequest):
         ]
 
         try:
+            t_llm = time.monotonic()
+            t_first_token = None
             stream = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
@@ -384,9 +402,25 @@ def recommend(request: RecommendRequest):
                 stream=True,
             )
             for chunk in stream:
+                # Some SDK versions append a usage-only chunk with choices=[]
+                if not chunk.choices:
+                    if getattr(chunk, "usage", None):
+                        u = chunk.usage
+                        elapsed_llm = round((time.monotonic() - t_llm) * 1000)
+                        ttft = round((t_first_token - t_llm) * 1000) if t_first_token else "n/a"
+                        print(
+                            f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms | "
+                            f"prompt={u.prompt_tokens} completion={u.completion_tokens} total={u.total_tokens}"
+                        )
+                    continue
                 text = chunk.choices[0].delta.content or ""
                 if text:
+                    if t_first_token is None:
+                        t_first_token = time.monotonic()
                     yield json.dumps({"type": "token", "text": text}) + "\n"
+            elapsed_llm = round((time.monotonic() - t_llm) * 1000)
+            ttft = round((t_first_token - t_llm) * 1000) if t_first_token else "n/a"
+            print(f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms")
         except RateLimitError as e:
             print(f"Groq rate limit hit: {e}")
             import re
@@ -411,6 +445,7 @@ def recommend(request: RecommendRequest):
             )
             yield json.dumps({"type": "token", "text": fallback}) + "\n"
 
+        print(f"[request] total={round((time.monotonic() - t_request) * 1000)}ms")
         yield json.dumps({"type": "done"}) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
