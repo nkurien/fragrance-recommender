@@ -503,3 +503,28 @@ def test_llm_receives_at_most_7_candidates(client_with_mocks):
     # Frontend still gets all 30
     matches, _ = _parse_stream(response)
     assert len(matches) == 30
+
+
+# ---------------------------------------------------------------------------
+# Health check connection leak
+# ---------------------------------------------------------------------------
+
+
+def test_health_check_putconn_called_on_db_error(monkeypatch):
+    """putconn must be called even when the DB query raises, so the connection
+    is returned to the pool and doesn't leak."""
+    mock_conn = MagicMock()
+    mock_conn.cursor.side_effect = Exception("db is down")
+
+    mock_pool = MagicMock()
+    mock_pool.getconn.return_value = mock_conn
+
+    monkeypatch.setattr(main_module, "db_pool", mock_pool)
+    monkeypatch.setattr(main_module, "groq_client", MagicMock())
+
+    client = TestClient(main_module.app)
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert "error" in response.json()["database"]
+    mock_pool.putconn.assert_called_once_with(mock_conn)
