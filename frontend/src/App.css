@@ -361,6 +361,19 @@ body {
   color: var(--color-text-muted);
 }
 
+.text-input.warming-up {
+  border-color: rgba(249, 115, 22, 0.15);
+}
+
+.text-input.warming-up::placeholder {
+  animation: warmup-pulse 2s ease-in-out infinite;
+}
+
+@keyframes warmup-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.7; }
+}
+
 .gender-select {
   background: var(--color-bg-input);
   border: 1px solid var(--color-border);

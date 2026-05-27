@@ -53,6 +53,7 @@ export default function App() {
   const [inputText, setInputText] = useState('');
   const [genderFilter, setGenderFilter] = useState('');
   const [loading, setLoading] = useState(false);
+  const [backendReady, setBackendReady] = useState(false);
   const [matches, setMatches] = useState([]);
   const [visibleCount, setVisibleCount] = useState(5);
   const [mobileTab, setMobileTab] = useState('chat');
@@ -60,10 +61,49 @@ export default function App() {
   
   const messagesEndRef = useRef(null);
 
-  // Warm up the backend and DB pool on mount so the first real request isn't cold
+  // Poll the backend health endpoint until it responds, so the user can't
+  // submit into a cold server.  Falls back to unblocking after 30s so the
+  // UI is never permanently locked.
   useEffect(() => {
     const apiUrl = import.meta.env.VITE_API_URL || '';
-    fetch(`${apiUrl}/api/health`).catch(() => {});
+    let done = false;
+
+    const interval = setInterval(() => {
+      fetch(`${apiUrl}/api/health`)
+        .then(r => {
+          if (r.ok && !done) {
+            done = true;
+            setBackendReady(true);
+            clearInterval(interval);
+          }
+        })
+        .catch(() => {}); // keep retrying
+    }, 3000);
+
+    // Fire the first ping immediately instead of waiting 3s
+    fetch(`${apiUrl}/api/health`)
+      .then(r => {
+        if (r.ok && !done) {
+          done = true;
+          setBackendReady(true);
+          clearInterval(interval);
+        }
+      })
+      .catch(() => {});
+
+    // Fallback: unblock after 30s no matter what
+    const timeout = setTimeout(() => {
+      if (!done) {
+        done = true;
+        setBackendReady(true);
+        clearInterval(interval);
+      }
+    }, 30000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
   }, []);
 
   // Scroll to bottom when messages list updates
@@ -281,9 +321,9 @@ export default function App() {
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                placeholder="Describe your perfect fragrance profile..."
-                className="text-input"
-                disabled={loading}
+                placeholder={backendReady ? 'Describe your perfect fragrance profile...' : 'Warming up sommelier...'}
+                className={`text-input${!backendReady ? ' warming-up' : ''}`}
+                disabled={loading || !backendReady}
               />
               <select
                 value={genderFilter}
@@ -296,7 +336,7 @@ export default function App() {
                 <option value="women">Female</option>
                 <option value="men">Male</option>
               </select>
-              <button type="submit" disabled={loading || !inputText.trim()} className="send-button">
+              <button type="submit" disabled={loading || !inputText.trim() || !backendReady} className="send-button">
                 <SendIcon />
               </button>
             </form>
