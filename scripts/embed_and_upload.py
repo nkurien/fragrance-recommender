@@ -108,11 +108,12 @@ insert_query = """
 # TRUNCATE is transactional in Postgres: nothing is committed until the final
 # conn.commit(), so a failed insert rolls back and the live table stays intact.
 # (A table-swap would briefly double storage, which the Neon free tier can't spare.)
+print("Clearing existing fragrances table...")
+cur.execute("TRUNCATE TABLE fragrances;")
+# Created after the TRUNCATE so it only ever sees the deduped rows, never stale duplicates.
 cur.execute(
     "CREATE UNIQUE INDEX IF NOT EXISTS fragrances_name_brand_key ON fragrances (name, brand);"
 )
-print("Clearing existing fragrances table...")
-cur.execute("TRUNCATE TABLE fragrances;")
 
 execute_values(cur, insert_query, insert_data)
 conn.commit()
