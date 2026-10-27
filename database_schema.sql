@@ -20,9 +20,12 @@ CREATE TABLE IF NOT EXISTS fragrances (
 
 -- 3. Create HNSW Index (Cosine Similarity)
 -- Note: If you face memory limitations on database free tiers during index creation,
--- you can safely drop or skip this. At ~13k rows, queries are extremely fast even without it.
-CREATE INDEX IF NOT EXISTS fragrances_hnsw_idx 
+-- you can safely drop or skip this. At ~72k rows, queries are slower without it.
+CREATE INDEX IF NOT EXISTS fragrances_hnsw_idx
 ON fragrances USING hnsw (embedding vector_cosine_ops);
+
+-- Also created by scripts/embed_and_upload.py before it reloads the table.
+CREATE UNIQUE INDEX IF NOT EXISTS fragrances_name_brand_key ON fragrances (name, brand);
 
 -- 4. LLM usage log (also created automatically at backend startup)
 CREATE TABLE IF NOT EXISTS usage_log (

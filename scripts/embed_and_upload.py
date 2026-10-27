@@ -1,20 +1,22 @@
 import os
 import sys
 import time
-import pandas as pd
 from sentence_transformers import SentenceTransformer
 import psycopg2
 from psycopg2.extras import execute_values
 from pgvector.psycopg2 import register_vector
 from dotenv import load_dotenv
 
+from fragrance_data import MIN_VOTES, load_fragrances
+
 # Load environment variables from backend/.env if available
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../backend/.env"))
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CSV_PATH = os.environ.get(
-    "CSV_PATH", os.path.join(os.path.dirname(__file__), "../data/fra_cleaned.csv")
+    "CSV_PATH", os.path.join(os.path.dirname(__file__), "../data/perfumes.csv")
 )
+MIN_VOTES_ENV = int(os.environ.get("MIN_VOTES", MIN_VOTES))
 
 if not DATABASE_URL:
     print("Error: DATABASE_URL environment variable is not set.")
@@ -24,7 +26,7 @@ if not DATABASE_URL:
 if not os.path.exists(CSV_PATH):
     print(f"Error: CSV file not found at '{CSV_PATH}'.")
     print(
-        "Please download 'fra_cleaned.csv' from Kaggle and place it in the 'data/' directory."
+        "Please download 'perfumes.csv' (Fragrantica Perfumes, ledecanteur) from Kaggle and place it in the 'data/' directory."
     )
     sys.exit(1)
 
@@ -33,69 +35,13 @@ print("Loading sentence-transformers/all-MiniLM-L6-v2 model...")
 # downloads once, then caches locally
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# 2. Load and Preprocess CSV
-print(f"Reading dataset from {CSV_PATH}...")
-# Delimiter is semicolons in raw data, encoding is latin1 for European characters
-df = pd.read_csv(CSV_PATH, sep=";", encoding="latin1")
-
-# Clean nulls to avoid NaN string addition
-cols_to_fill = [
-    "url",
-    "Perfume",
-    "Brand",
-    "Gender",
-    "Rating Value",
-    "Rating Count",
-    "Year",
-    "Top",
-    "Middle",
-    "Base",
-    "mainaccord1",
-    "mainaccord2",
-    "mainaccord3",
-    "mainaccord4",
-    "mainaccord5",
-]
-for col in cols_to_fill:
-    if col in df.columns:
-        df[col] = df[col].fillna("").astype(str).str.strip()
-    else:
-        df[col] = ""
-
-
-# Helper to aggregate accords
-def clean_accords(row):
-    accords = [
-        row["mainaccord1"],
-        row["mainaccord2"],
-        row["mainaccord3"],
-        row["mainaccord4"],
-        row["mainaccord5"],
-    ]
-    return ", ".join([a for a in accords if a])
-
-
-df["accords_list"] = df.apply(clean_accords, axis=1)
-
-# Create embedding text using only olfactory profile — intentionally exclude name/brand
-# so vector similarity reflects scent similarity, not name similarity.
-print("Preparing text for embedding generation...")
-df["embedding_text"] = (
-    "Gender: "
-    + df["Gender"]
-    + ". "
-    + "Notes: "
-    + df["Top"]
-    + ", "
-    + df["Middle"]
-    + ", "
-    + df["Base"]
-    + ". "
-    + "Accords: "
-    + df["accords_list"]
-)
+# 2. Load and clean the dataset
+print(f"Reading dataset from {CSV_PATH} (min {MIN_VOTES_ENV} votes)...")
+df = load_fragrances(CSV_PATH, min_votes=MIN_VOTES_ENV)
 
 # 3. Generate Embeddings
+# Embedding text uses only the olfactory profile — intentionally excludes name/brand
+# so vector similarity reflects scent similarity, not name similarity.
 print(
     f"Generating embeddings for {len(df)} fragrances (this may take a few minutes on CPU)..."
 )
@@ -131,58 +77,40 @@ if not cur.fetchone():
 
 print("Uploading data in batches...")
 
-# Prepare batch insert tuples
-insert_data = []
-for idx, row in df.iterrows():
-    # Clean rating to numeric/float (replace commas with dots)
-    rating_val = None
-    rating_str = row["Rating Value"]
-    if rating_str and rating_str != "nan" and rating_str != "":
-        try:
-            rating_val = float(rating_str.replace(",", "."))
-        except ValueError:
-            pass
 
-    rating_count_val = None
-    rating_count_str = row["Rating Count"]
-    if rating_count_str and rating_count_str != "nan" and rating_count_str != "":
-        try:
-            rating_count_val = int(float(rating_count_str.replace(",", ".")))
-        except ValueError:
-            pass
+def none_if_empty(value):
+    return value if value else None
 
-    year_val = None
-    year_str = row["Year"]
-    if year_str and year_str != "nan" and year_str != "":
-        try:
-            year_val = int(float(year_str))
-        except ValueError:
-            pass
 
-    insert_data.append(
-        (
-            row["Perfume"],
-            row["Brand"],
-            row["Gender"] if row["Gender"] else None,
-            rating_val,
-            rating_count_val,
-            year_val,
-            row["Top"] if row["Top"] else None,
-            row["Middle"] if row["Middle"] else None,
-            row["Base"] if row["Base"] else None,
-            row["accords_list"] if row["accords_list"] else None,
-            row["url"] if row["url"] else None,
-            embeddings[idx].tolist(),
-        )
+insert_data = [
+    (
+        row.name,
+        row.brand,
+        row.gender,
+        row.rating,
+        row.rating_count,
+        row.year,
+        none_if_empty(row.top_notes),
+        none_if_empty(row.middle_notes),
+        none_if_empty(row.base_notes),
+        row.main_accords,
+        none_if_empty(row.url),
+        embeddings[idx].tolist(),
     )
+    for idx, row in enumerate(df.itertuples(index=False))
+]
 
-# Execute batch insert using execute_values (extremely fast)
 insert_query = """
     INSERT INTO fragrances (name, brand, gender, rating, rating_count, year, top_notes, middle_notes, base_notes, main_accords, url, embedding)
     VALUES %s
 """
 
-# Empty table first to avoid duplicate MVP uploads
+# TRUNCATE is transactional in Postgres: nothing is committed until the final
+# conn.commit(), so a failed insert rolls back and the live table stays intact.
+# (A table-swap would briefly double storage, which the Neon free tier can't spare.)
+cur.execute(
+    "CREATE UNIQUE INDEX IF NOT EXISTS fragrances_name_brand_key ON fragrances (name, brand);"
+)
 print("Clearing existing fragrances table...")
 cur.execute("TRUNCATE TABLE fragrances;")
 
