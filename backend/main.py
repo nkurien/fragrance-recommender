@@ -1,7 +1,10 @@
 import math
 import json
+import secrets
 import time
-from fastapi import FastAPI, HTTPException
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -21,6 +24,10 @@ class Settings(BaseSettings):
 
     database_url: str
     groq_api_key: str
+    # Gates /api/usage; empty disables the endpoint entirely
+    admin_key: str = ""
+    # Groq doesn't expose a daily token limit in headers, so it's configured here
+    daily_token_limit: int = 200_000
 
 
 # Initialize settings (fail fast on missing variables)
@@ -31,7 +38,13 @@ print("Loading local sentence-transformers/all-MiniLM-L6-v2 embedding model...")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 embedding_model.encode("warmup")  # burn PyTorch JIT cost before first request
 
-app = FastAPI(title="Fragrance Recommender API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_usage_table()
+    yield
+
+
+app = FastAPI(title="Fragrance Recommender API", lifespan=lifespan)
 
 # Configure CORS for Vercel frontend
 app.add_middleware(
@@ -56,6 +69,41 @@ db_pool = SimpleConnectionPool(
     keepalives_count=5,
 )
 print("Database connection pool initialized successfully with keepalives.")
+
+USAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS usage_log (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    stage TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    latency_ms INTEGER,
+    limit_requests INTEGER,
+    remaining_requests INTEGER,
+    limit_tokens INTEGER,
+    remaining_tokens INTEGER
+);
+CREATE INDEX IF NOT EXISTS usage_log_ts_idx ON usage_log (ts);
+"""
+
+
+def ensure_usage_table() -> None:
+    """Idempotently create usage_log so deploys need no manual migration."""
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute(USAGE_TABLE_SQL)
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"[usage] could not ensure usage_log table: {e}")
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
 
 # Initialize Groq Client
 groq_client = None
@@ -177,6 +225,152 @@ def health_check():
 REWRITE_MODEL = "openai/gpt-oss-20b"
 RECOMMEND_MODEL = "openai/gpt-oss-120b"
 
+# Single worker keeps usage inserts off the request path without piling up connections
+_usage_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="usage-log")
+
+
+def _int_header(headers, name: str) -> int | None:
+    try:
+        return int(headers.get(name))
+    except (TypeError, ValueError):
+        return None
+
+
+def _insert_usage(row: tuple) -> None:
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO usage_log
+                    (stage, model, prompt_tokens, completion_tokens, latency_ms,
+                     limit_requests, remaining_requests, limit_tokens, remaining_tokens)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                row,
+            )
+        conn.commit()
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"[usage] insert failed: {e}")
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
+
+def record_usage(stage: str, model: str, usage, latency_ms: int, headers) -> None:
+    """Fire-and-forget: log token usage plus Groq's rate-limit headers. Never raises."""
+    try:
+        row = (
+            stage,
+            model,
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None),
+            latency_ms,
+            _int_header(headers, "x-ratelimit-limit-requests"),
+            _int_header(headers, "x-ratelimit-remaining-requests"),
+            _int_header(headers, "x-ratelimit-limit-tokens"),
+            _int_header(headers, "x-ratelimit-remaining-tokens"),
+        )
+        _usage_executor.submit(_insert_usage, row)
+    except Exception as e:
+        print(f"[usage] record failed: {e}")
+
+
+def _usage_summary(cur) -> dict:
+    """Aggregate usage_log for the dashboard: rolling 24h per model, latest limits, last 7 days."""
+    cur.execute(
+        """
+        SELECT model, COUNT(*), COALESCE(SUM(prompt_tokens), 0),
+               COALESCE(SUM(completion_tokens), 0), COALESCE(AVG(latency_ms), 0)
+        FROM usage_log WHERE ts > now() - interval '24 hours' GROUP BY model
+        """
+    )
+    models = {
+        r[0]: {
+            "model": r[0],
+            "requests_24h": r[1],
+            "prompt_tokens_24h": int(r[2]),
+            "completion_tokens_24h": int(r[3]),
+            "tokens_24h": int(r[2]) + int(r[3]),
+            "avg_latency_ms": round(float(r[4])),
+            "limit_requests": None,
+            "remaining_requests": None,
+            "limit_tokens": None,
+            "remaining_tokens": None,
+            "limits_as_of": None,
+        }
+        for r in cur.fetchall()
+    }
+
+    cur.execute(
+        """
+        SELECT DISTINCT ON (model) model, ts, limit_requests, remaining_requests,
+               limit_tokens, remaining_tokens
+        FROM usage_log WHERE limit_requests IS NOT NULL ORDER BY model, ts DESC
+        """
+    )
+    for r in cur.fetchall():
+        entry = models.setdefault(
+            r[0],
+            {
+                "model": r[0],
+                "requests_24h": 0,
+                "prompt_tokens_24h": 0,
+                "completion_tokens_24h": 0,
+                "tokens_24h": 0,
+                "avg_latency_ms": 0,
+            },
+        )
+        entry.update(
+            limits_as_of=r[1].isoformat(),
+            limit_requests=r[2],
+            remaining_requests=r[3],
+            limit_tokens=r[4],
+            remaining_tokens=r[5],
+        )
+
+    cur.execute(
+        """
+        SELECT ts::date, COUNT(*), COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+        FROM usage_log WHERE ts > now() - interval '7 days' GROUP BY 1 ORDER BY 1
+        """
+    )
+    days = [
+        {"day": r[0].isoformat(), "requests": r[1], "tokens": int(r[2])}
+        for r in cur.fetchall()
+    ]
+    return {
+        "daily_token_limit": settings.daily_token_limit,
+        "models": sorted(models.values(), key=lambda m: m["model"]),
+        "days": days,
+    }
+
+
+@app.get("/api/usage")
+def usage_dashboard(x_admin_key: str | None = Header(default=None)):
+    # 404 when unconfigured so the endpoint's existence isn't advertised
+    if not settings.admin_key:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not x_admin_key or not secrets.compare_digest(
+        x_admin_key.encode(), settings.admin_key.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            return _usage_summary(cur)
+    except Exception as e:
+        print(f"[usage] summary failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not load usage data")
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
 
 def rewrite_query(description: str, history: list, gender: str | None = None) -> dict:
     """
@@ -211,7 +405,7 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
 
     t0 = time.monotonic()
     try:
-        response = groq_client.chat.completions.create(
+        raw = groq_client.chat.completions.with_raw_response.create(
             model=REWRITE_MODEL,
             messages=[
                 {"role": "system", "content": system},
@@ -225,9 +419,11 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
             response_format={"type": "json_object"},
             timeout=30,
         )
-        result = json.loads(response.choices[0].message.content)
+        response = raw.parse()
         usage = response.usage
         elapsed = round((time.monotonic() - t0) * 1000)
+        record_usage("rewrite", REWRITE_MODEL, usage, elapsed, raw.headers)
+        result = json.loads(response.choices[0].message.content)
         print(
             f"[rewrite] {elapsed}ms | "
             f"prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens} | "
@@ -399,7 +595,7 @@ def recommend(request: RecommendRequest):
             t_llm = time.monotonic()
             t_first_token = None
             streamed_any = False
-            stream = groq_client.chat.completions.create(
+            raw = groq_client.chat.completions.with_raw_response.create(
                 model=RECOMMEND_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -413,17 +609,12 @@ def recommend(request: RecommendRequest):
                 timeout=30,
                 stream=True,
             )
-            for chunk in stream:
-                # Some SDK versions append a usage-only chunk with choices=[]
+            usage = None
+            for chunk in raw.parse():
+                # Groq puts usage on the final chunk, which also carries choices
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
                 if not chunk.choices:
-                    if getattr(chunk, "usage", None):
-                        u = chunk.usage
-                        elapsed_llm = round((time.monotonic() - t_llm) * 1000)
-                        ttft = round((t_first_token - t_llm) * 1000) if t_first_token else "n/a"
-                        print(
-                            f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms | "
-                            f"prompt={u.prompt_tokens} completion={u.completion_tokens} total={u.total_tokens}"
-                        )
                     continue
                 # gpt-oss writes fragrance slugs with U+2011 non-breaking hyphens
                 text = (chunk.choices[0].delta.content or "").replace("\u2011", "-")
@@ -434,7 +625,13 @@ def recommend(request: RecommendRequest):
                     yield json.dumps({"type": "token", "text": text}) + "\n"
             elapsed_llm = round((time.monotonic() - t_llm) * 1000)
             ttft = round((t_first_token - t_llm) * 1000) if t_first_token else "n/a"
-            print(f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms")
+            token_log = (
+                f" | prompt={usage.prompt_tokens} completion={usage.completion_tokens} total={usage.total_tokens}"
+                if usage
+                else ""
+            )
+            print(f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms{token_log}")
+            record_usage("recommend", RECOMMEND_MODEL, usage, elapsed_llm, raw.headers)
             if not streamed_any:
                 # Reasoning can exhaust max_tokens before any prose is written
                 print("[recommend] empty completion, using fallback text")

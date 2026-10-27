@@ -23,3 +23,19 @@ CREATE TABLE IF NOT EXISTS fragrances (
 -- you can safely drop or skip this. At ~13k rows, queries are extremely fast even without it.
 CREATE INDEX IF NOT EXISTS fragrances_hnsw_idx 
 ON fragrances USING hnsw (embedding vector_cosine_ops);
+
+-- 4. LLM usage log (also created automatically at backend startup)
+CREATE TABLE IF NOT EXISTS usage_log (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    stage TEXT NOT NULL,              -- 'rewrite' | 'recommend'
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,        -- includes reasoning tokens
+    latency_ms INTEGER,
+    limit_requests INTEGER,           -- Groq x-ratelimit-* headers at the time of the call
+    remaining_requests INTEGER,
+    limit_tokens INTEGER,
+    remaining_tokens INTEGER
+);
+CREATE INDEX IF NOT EXISTS usage_log_ts_idx ON usage_log (ts);

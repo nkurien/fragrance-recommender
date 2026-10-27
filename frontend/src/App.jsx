@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import UsagePanel from './UsagePanel';
 import './App.css';
 
 // SVG Icons as inline components for clean packaging
@@ -422,6 +423,7 @@ export default function App() {
           )}
         </aside>
       </div>
+      <UsagePanel />
     </div>
   );
 }
