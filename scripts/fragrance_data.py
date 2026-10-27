@@ -77,7 +77,8 @@ def load_fragrances(csv_path: str, min_votes: int = MIN_VOTES) -> pd.DataFrame:
             "gender": gender,
             "rating": df["rating_avg"],
             "rating_count": df["vote_count"].astype(int),
-            "year": df["year"].map(clean_year).astype(object),
+            # Built from a list: Series.map would turn None into NaN once real years are mixed in.
+            "year": pd.Series([clean_year(v) for v in df["year"]], index=df.index, dtype=object),
             "top_notes": layers["top"][keep].map(", ".join),
             "middle_notes": layers["middle"][keep].map(", ".join),
             "base_notes": layers["base"][keep].map(", ".join),

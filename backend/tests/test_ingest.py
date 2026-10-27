@@ -153,6 +153,18 @@ class TestLoadFragrances:
         df = load_fragrances(make_csv(tmp_path, [{"year": 20}]))
         assert df.iloc[0]["year"] is None
 
+    def test_missing_year_is_none_not_nan_when_mixed_with_valid_years(self, tmp_path):
+        rows = [
+            {"name": "A", "year": 2019},
+            {"name": "B", "year": None},
+            {"name": "C", "year": 20},
+        ]
+        df = load_fragrances(make_csv(tmp_path, rows))
+        years = dict(zip(df["name"], df["year"]))
+        assert years["A"] == 2019 and isinstance(years["A"], int)
+        assert years["B"] is None
+        assert years["C"] is None
+
     def test_embedding_text_excludes_name_and_brand(self, tmp_path):
         rows = [{"name": "UniqueName", "brand": "UniqueBrand"}]
         text = load_fragrances(make_csv(tmp_path, rows)).iloc[0]["embedding_text"]
