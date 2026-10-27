@@ -174,6 +174,10 @@ def health_check():
     }
 
 
+REWRITE_MODEL = "openai/gpt-oss-20b"
+RECOMMEND_MODEL = "openai/gpt-oss-120b"
+
+
 def rewrite_query(description: str, history: list, gender: str | None = None) -> dict:
     """
     Use a fast LLM to rewrite the user's conversational query into a structured
@@ -208,13 +212,15 @@ def rewrite_query(description: str, history: list, gender: str | None = None) ->
     t0 = time.monotonic()
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=REWRITE_MODEL,
             messages=[
                 {"role": "system", "content": system},
                 *history_messages,
                 {"role": "user", "content": description},
             ],
-            max_tokens=300,
+            # Reasoning tokens count against max_tokens; without headroom the JSON gets cut off
+            max_tokens=600,
+            reasoning_effort="low",
             temperature=0.1,
             response_format={"type": "json_object"},
             timeout=30,
@@ -392,14 +398,17 @@ def recommend(request: RecommendRequest):
         try:
             t_llm = time.monotonic()
             t_first_token = None
+            streamed_any = False
             stream = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=RECOMMEND_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *history_messages,
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=450,
+                # Reasoning tokens count against max_tokens, so leave room beyond the ~450 of prose
+                max_tokens=1500,
+                reasoning_effort="low",
                 temperature=0.4,
                 timeout=30,
                 stream=True,
@@ -416,14 +425,25 @@ def recommend(request: RecommendRequest):
                             f"prompt={u.prompt_tokens} completion={u.completion_tokens} total={u.total_tokens}"
                         )
                     continue
-                text = chunk.choices[0].delta.content or ""
+                # gpt-oss writes fragrance slugs with U+2011 non-breaking hyphens
+                text = (chunk.choices[0].delta.content or "").replace("\u2011", "-")
                 if text:
+                    streamed_any = True
                     if t_first_token is None:
                         t_first_token = time.monotonic()
                     yield json.dumps({"type": "token", "text": text}) + "\n"
             elapsed_llm = round((time.monotonic() - t_llm) * 1000)
             ttft = round((t_first_token - t_llm) * 1000) if t_first_token else "n/a"
             print(f"[recommend] first_token={ttft}ms | total={elapsed_llm}ms")
+            if not streamed_any:
+                # Reasoning can exhaust max_tokens before any prose is written
+                print("[recommend] empty completion, using fallback text")
+                fallback = (
+                    "I couldn't put my thoughts into words this time. Here are the top matches I found: "
+                    + ", ".join(f"**{m.name}** by {m.brand}" for m in matches[:3])
+                    + "."
+                )
+                yield json.dumps({"type": "token", "text": fallback}) + "\n"
         except RateLimitError as e:
             print(f"Groq rate limit hit: {e}")
             import re

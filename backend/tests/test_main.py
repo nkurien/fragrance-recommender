@@ -505,6 +505,58 @@ def test_llm_receives_at_most_7_candidates(client_with_mocks):
     assert len(matches) == 30
 
 
+def test_model_ids_and_reasoning_budget(client_with_mocks):
+    """Both stages use the gpt-oss models with low reasoning effort and room for reasoning tokens."""
+    mock_groq, _, client = client_with_mocks
+    mock_groq.chat.completions.create.side_effect = [
+        _mock_groq_response(
+            '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
+        ),
+        _mock_groq_stream("Here are my picks."),
+    ]
+
+    client.post("/api/recommend", json={"description": "something floral"})
+
+    rewrite_kwargs, recommend_kwargs = (
+        c[1] for c in mock_groq.chat.completions.create.call_args_list
+    )
+    assert rewrite_kwargs["model"] == "openai/gpt-oss-20b"
+    assert recommend_kwargs["model"] == "openai/gpt-oss-120b"
+    for kwargs in (rewrite_kwargs, recommend_kwargs):
+        assert kwargs["reasoning_effort"] == "low"
+    assert rewrite_kwargs["max_tokens"] >= 600
+    assert recommend_kwargs["max_tokens"] >= 1500
+
+
+def test_non_breaking_hyphens_normalised_in_stream(client_with_mocks):
+    mock_groq, _, client = client_with_mocks
+    mock_groq.chat.completions.create.side_effect = [
+        _mock_groq_response(
+            '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
+        ),
+        _mock_groq_stream("**bal\u2011d\u2011afrique** is lovely."),
+    ]
+
+    response = client.post("/api/recommend", json={"description": "something floral"})
+    _, text = _parse_stream(response)
+    assert text == "**bal-d-afrique** is lovely."
+
+
+def test_empty_completion_falls_back_to_top_matches(client_with_mocks):
+    """If reasoning eats the token budget and no prose streams, the user still gets the matches."""
+    mock_groq, _, client = client_with_mocks
+    mock_groq.chat.completions.create.side_effect = [
+        _mock_groq_response(
+            '{"embedding_text": "Notes: rose", "brand_filter": null, "exclude_name": null}'
+        ),
+        _mock_groq_stream(""),
+    ]
+
+    response = client.post("/api/recommend", json={"description": "something floral"})
+    _, text = _parse_stream(response)
+    assert "**bal-d-afrique** by byredo" in text
+
+
 # ---------------------------------------------------------------------------
 # Health check connection leak
 # ---------------------------------------------------------------------------
